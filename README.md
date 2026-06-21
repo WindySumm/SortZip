@@ -26,19 +26,7 @@
 
 ### 使用方法
 
-**方式一：图形界面（推荐）**
-
-```bash
-python main.py
-```
-
-**方式二：命令行**
-
-修改 `SortZip.py` 顶部 `CONFIG` 字典中的参数，然后运行：
-
-```bash
-python SortZip.py
-```
+直接运行 `dist/SortZip.exe` 即可启动图形界面。
 
 ---
 
