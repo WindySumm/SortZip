@@ -421,6 +421,29 @@ class MainWindow(QMainWindow):
                                 "如不需要密码请留空")
             return
 
+        # 检查：目标文件夹中是否已存在映射目录名
+        custom_names = config.get('custom_names', {})
+        if custom_names and config['dest'] and os.path.isdir(config['dest']):
+            existing_dirs = set(d.name for d in Path(config['dest']).iterdir() if d.is_dir())
+            mapped_folders = set(custom_names.values())
+            overlap = existing_dirs & mapped_folders
+            if overlap:
+                QMessageBox.warning(self, "目标文件夹冲突",
+                                    "目标文件夹中已存在以下映射目录名：\n" +
+                                    "\n".join(f"  · {name}" for name in sorted(overlap)) +
+                                    "\n\n请先清理目标文件夹或修改映射名称")
+                return
+
+        # 检查：源文件夹中是否有符合勾选类型的文件
+        if custom_names and config['src'] and os.path.isdir(config['src']):
+            src_exts = set(f.suffix.lower() for f in Path(config['src']).iterdir() if f.is_file())
+            checked_exts = set(custom_names.keys())
+            if not src_exts & checked_exts:
+                QMessageBox.warning(self, "无匹配文件",
+                                    "源文件夹中没有符合已勾选扩展名的文件\n"
+                                    "请检查源文件夹或勾选正确的扩展名")
+                return
+
         # 准备执行
         self.run_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
