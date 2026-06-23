@@ -10,7 +10,7 @@ def _resource_path(relative_path):
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QFormLayout, QLineEdit, QSpinBox, QComboBox,
-    QCheckBox, QPushButton, QTextEdit, QTableWidget, QTableWidgetItem,
+    QCheckBox, QPushButton, QProgressBar, QTextEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QLabel, QMessageBox, QFileDialog,
 )
 from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot, QSettings
@@ -60,23 +60,50 @@ class LogStream:
 class Worker(QObject):
     log = Signal(str)          # 日志信号
     error = Signal(str)        # 错误信号
-    finished = Signal()        # 完成信号
+    progress = Signal(int, int, str)  # 进度：(当前值, 最大值, 描述)
+    finished = Signal(dict)    # 完成信号，携带统计数据
 
     def __init__(self, config):
         super().__init__()
         self.config = config
+        self._cancelled = False
+        self.stats = {"files_moved": 0, "files_renamed": 0, "groups": 0}
+
+    def cancel(self):
+        self._cancelled = True
+
+    def _cancel_check(self):
+        return self._cancelled
 
     @Slot()
     def run(self):
         old_stdout = sys.stdout
         sys.stdout = LogStream(self.log)
         try:
-            SortZip.main_from_config(self.config)
+            SortZip.main_from_config(
+                self.config,
+                on_progress=lambda start, end, cur, total, msg: self._report_progress(start, end, cur, total, msg),
+                cancel_check=self._cancel_check,
+            )
         except Exception as e:
             self.error.emit(str(e))
         finally:
             sys.stdout = old_stdout
-            self.finished.emit()
+            self.finished.emit(self.stats)
+
+    def _report_progress(self, start_pct, end_pct, cur, total, msg):
+        if total <= 0:
+            pct = start_pct
+        else:
+            pct = start_pct + (end_pct - start_pct) * cur // total
+        # 根据阶段统计
+        if msg.startswith("分类"):
+            self.stats["files_moved"] = cur
+        elif msg.startswith("重命名"):
+            self.stats["files_renamed"] = cur
+        elif msg.startswith("压缩"):
+            self.stats["groups"] = cur
+        self.progress.emit(pct, 100, msg)
 
 
 # ---- 主窗口 ----
@@ -238,10 +265,24 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(opt_group)
 
-        # ======== 执行按钮 ========
+        # ======== 进度条 + 执行 / 取消按钮 ========
+        progress_row = QHBoxLayout()
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMinimum(0)
+        self.progress_bar.setMaximum(100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFixedHeight(24)
+        progress_row.addWidget(self.progress_bar, 1)
+
         self.run_btn = QPushButton("开始执行")
         self.run_btn.setMinimumHeight(40)
-        layout.addWidget(self.run_btn)
+        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn.setMinimumHeight(40)
+        self.cancel_btn.setEnabled(False)
+        progress_row.addWidget(self.run_btn)
+        progress_row.addWidget(self.cancel_btn)
+        layout.addLayout(progress_row)
 
         # ======== 日志输出区域 ========
         log_label = QLabel("输出日志:")
@@ -258,6 +299,7 @@ class MainWindow(QMainWindow):
         self.ext_add_btn.clicked.connect(lambda: self._add_ext_row("", ""))
         self.ext_del_btn.clicked.connect(self._del_ext_row)
         self.run_btn.clicked.connect(self._run)
+        self.cancel_btn.clicked.connect(self._cancel)
 
     # ======== 私有辅助方法 ========
 
@@ -381,6 +423,8 @@ class MainWindow(QMainWindow):
 
         # 准备执行
         self.run_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.progress_bar.setValue(0)
         self.log_text.clear()
 
         # 创建工作线程
@@ -388,17 +432,45 @@ class MainWindow(QMainWindow):
         self.worker = Worker(config)
         self.worker.moveToThread(self.thread)
 
-        # 信号绑定
+        # 信号绑定（finished 携带 stats 参数，用 lambda 丢弃）
         self.thread.started.connect(self.worker.run)
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.worker.finished.connect(self._save_settings)
-        self.thread.finished.connect(self.thread.deleteLater)
-        self.thread.finished.connect(lambda: self.run_btn.setEnabled(True))
+        self.worker.finished.connect(lambda s: self.thread.quit())
+        self.worker.finished.connect(lambda s: self.worker.deleteLater())
+        self.worker.finished.connect(lambda s: self._save_settings())
+        self.worker.finished.connect(lambda s: self._on_finished(s))
+        self.thread.finished.connect(lambda: self.thread.deleteLater())
         self.worker.log.connect(self._append_log)
         self.worker.error.connect(lambda e: self._append_log(f"[错误] {e}"))
+        self.worker.progress.connect(self._update_progress)
 
         self.thread.start()
+
+    # ---- 取消操作 ----
+    def _cancel(self):
+        if self.worker:
+            self.worker.cancel()
+            self.cancel_btn.setEnabled(False)
+            self._append_log("正在取消...")
+
+    # ---- 进度更新 ----
+    @Slot(int, int, str)
+    def _update_progress(self, value, maximum, text):
+        self.progress_bar.setValue(value)
+        self.progress_bar.setFormat(f"{text}  [{value}%]")
+
+    # ---- 执行完成 ----
+    def _on_finished(self, stats):
+        self.run_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+        self.progress_bar.setValue(100)
+        self.progress_bar.setFormat("完成  [100%]")
+
+        if stats:
+            QMessageBox.information(self, "统计报告",
+                f"处理成功完成\n\n"
+                f"移动文件: {stats.get('files_moved', 0)} 个\n"
+                f"重命名文件: {stats.get('files_renamed', 0)} 个\n"
+                f"压缩组数: {stats.get('groups', 0)} 组")
 
     # ---- 按 1:2 比例调整扩展名列与文件夹名列宽度 ----
     def _resize_ext_columns(self):
