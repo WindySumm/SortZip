@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QFormLayout, QLineEdit, QSpinBox, QComboBox,
     QCheckBox, QPushButton, QProgressBar, QTextEdit, QTableWidget, QTableWidgetItem,
-    QHeaderView, QLabel, QMessageBox, QFileDialog,
+    QHeaderView, QLabel, QMessageBox, QFileDialog, QDialog,
 )
 from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot, QSettings
 from PySide6.QtGui import QIcon, QTextCursor, QDragEnterEvent, QDropEvent
@@ -61,7 +61,7 @@ class Worker(QObject):
     log = Signal(str)          # 日志信号
     error = Signal(str)        # 错误信号
     progress = Signal(int, int, str)  # 进度：(当前值, 最大值, 描述)
-    finished = Signal(dict)    # 完成信号，携带统计数据
+    finished = Signal()    # 完成信号
 
     def __init__(self, config):
         super().__init__()
@@ -89,7 +89,7 @@ class Worker(QObject):
             self.error.emit(str(e))
         finally:
             sys.stdout = old_stdout
-            self.finished.emit(self.stats)
+            self.finished.emit()
 
     def _report_progress(self, start_pct, end_pct, cur, total, msg):
         if total <= 0:
@@ -432,13 +432,13 @@ class MainWindow(QMainWindow):
         self.worker = Worker(config)
         self.worker.moveToThread(self.thread)
 
-        # 信号绑定（finished 携带 stats 参数，用 lambda 丢弃）
+        # 信号绑定
         self.thread.started.connect(self.worker.run)
-        self.worker.finished.connect(lambda s: self.thread.quit())
-        self.worker.finished.connect(lambda s: self.worker.deleteLater())
-        self.worker.finished.connect(lambda s: self._save_settings())
-        self.worker.finished.connect(lambda s: self._on_finished(s))
-        self.thread.finished.connect(lambda: self.thread.deleteLater())
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.worker.finished.connect(self._save_settings)
+        self.worker.finished.connect(self._on_finished)
+        self.thread.finished.connect(self.thread.deleteLater)
         self.worker.log.connect(self._append_log)
         self.worker.error.connect(lambda e: self._append_log(f"[错误] {e}"))
         self.worker.progress.connect(self._update_progress)
@@ -459,18 +459,40 @@ class MainWindow(QMainWindow):
         self.progress_bar.setFormat(f"{text}  [{value}%]")
 
     # ---- 执行完成 ----
-    def _on_finished(self, stats):
+    def _on_finished(self):
         self.run_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.progress_bar.setValue(100)
         self.progress_bar.setFormat("完成  [100%]")
 
-        if stats:
-            QMessageBox.information(self, "统计报告",
-                f"处理成功完成\n\n"
-                f"移动文件: {stats.get('files_moved', 0)} 个\n"
-                f"重命名文件: {stats.get('files_renamed', 0)} 个\n"
-                f"压缩组数: {stats.get('groups', 0)} 组")
+        stats = self.worker.stats if self.worker else {}
+        dlg = QDialog(self)
+        dlg.setWindowTitle("统计报告")
+        dlg.setFixedSize(280, 180)
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(10)
+        title = QLabel("处理成功完成")
+        title.setStyleSheet("font-size: 14px; font-weight: bold;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+        layout.addSpacing(6)
+        for label, key in [("移动文件", "files_moved"),
+                           ("重命名文件", "files_renamed"),
+                           ("压缩组数", "groups")]:
+            row = QHBoxLayout()
+            lbl = QLabel(f"{label}:")
+            val = QLabel(str(stats.get(key, 0)))
+            val.setStyleSheet("font-weight: bold;")
+            row.addStretch()
+            row.addWidget(lbl)
+            row.addWidget(val)
+            row.addStretch()
+            layout.addLayout(row)
+        layout.addStretch()
+        btn = QPushButton("确定")
+        btn.clicked.connect(dlg.accept)
+        layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        dlg.exec()
 
     # ---- 按 1:2 比例调整扩展名列与文件夹名列宽度 ----
     def _resize_ext_columns(self):
