@@ -406,19 +406,42 @@ class MainWindow(QMainWindow):
             'auto_close': self.auto_close_cb.isChecked(),
         }
 
+    # ---- 统一风格的信息弹窗 ----
+    def _show_styled_dialog(self, title, message, width=300, height=160):
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setFixedSize(width, height)
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(10)
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet("font-size: 14px; font-weight: bold;")
+        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_lbl)
+        layout.addSpacing(6)
+        msg_lbl = QLabel(message)
+        msg_lbl.setWordWrap(True)
+        msg_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(msg_lbl)
+        layout.addStretch()
+        btn = QPushButton("确定")
+        btn.clicked.connect(dlg.accept)
+        layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        dlg.exec()
+
     # ---- 执行主流程 ----
     def _run(self):
         config = self._build_config()
 
         # 校验输入
         if not config['src'] or not os.path.isdir(config['src']):
-            QMessageBox.warning(self, "错误", "请选择有效的源文件夹")
+            self._show_styled_dialog("错误", "请选择有效的源文件夹")
             return
         if config['password'] and len(config['password']) < 8:
-            QMessageBox.warning(self, "密码格式错误",
-                                "压缩密码至少需要 8 位字符\n"
-                                "支持字母、数字和特殊符号\n"
-                                "如不需要密码请留空")
+            self._show_styled_dialog("密码格式错误",
+                                     "压缩密码至少需要 8 位字符\n"
+                                     "支持字母、数字和特殊符号\n"
+                                     "如不需要密码请留空",
+                                     width=320, height=180)
             return
 
         # 检查：目标文件夹中是否已存在映射目录名
@@ -428,10 +451,11 @@ class MainWindow(QMainWindow):
             mapped_folders = set(custom_names.values())
             overlap = existing_dirs & mapped_folders
             if overlap:
-                QMessageBox.warning(self, "目标文件夹冲突",
-                                    "目标文件夹中已存在以下映射目录名：\n" +
-                                    "\n".join(f"  · {name}" for name in sorted(overlap)) +
-                                    "\n\n请先清理目标文件夹或修改映射名称")
+                self._show_styled_dialog("目标文件夹冲突",
+                                         "目标文件夹中已存在以下映射目录名：\n" +
+                                         "\n".join(f"  · {name}" for name in sorted(overlap)) +
+                                         "\n\n请先清理目标文件夹或修改映射名称",
+                                         width=340, height=200)
                 return
 
         # 检查：源文件夹中是否有符合勾选类型的文件
@@ -439,9 +463,10 @@ class MainWindow(QMainWindow):
             src_exts = set(f.suffix.lower() for f in Path(config['src']).iterdir() if f.is_file())
             checked_exts = set(custom_names.keys())
             if not src_exts & checked_exts:
-                QMessageBox.warning(self, "无匹配文件",
-                                    "源文件夹中没有符合已勾选扩展名的文件\n"
-                                    "请检查源文件夹或勾选正确的扩展名")
+                self._show_styled_dialog("无匹配文件",
+                                         "源文件夹中没有符合已勾选扩展名的文件\n"
+                                         "请检查源文件夹或勾选正确的扩展名",
+                                         width=320, height=170)
                 return
 
         # 准备执行
