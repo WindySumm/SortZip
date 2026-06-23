@@ -14,9 +14,33 @@ from PySide6.QtWidgets import (
     QHeaderView, QLabel, QMessageBox, QFileDialog,
 )
 from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot, QSettings
-from PySide6.QtGui import QIcon, QTextCursor
+from PySide6.QtGui import QIcon, QTextCursor, QDragEnterEvent, QDropEvent
 
 import SortZip
+
+
+# ---- 支持拖入文件夹的输入框 ----
+class DropLineEdit(QLineEdit):
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dropEvent(self, event: QDropEvent):
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls:
+                path = urls[0].toLocalFile()
+                if os.path.isdir(path):
+                    self.setText(path)
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
 
 
 # ---- 日志流：将 print 输出重定向到 Qt 信号 ----
@@ -80,7 +104,7 @@ class MainWindow(QMainWindow):
         basic_form = QFormLayout(basic_group)
 
         # 源文件夹
-        self.src_edit = QLineEdit(self.settings.value("src", ""))
+        self.src_edit = DropLineEdit(self.settings.value("src", ""))
         self.src_btn = QPushButton("浏览")
         src_row = QHBoxLayout()
         src_row.addWidget(self.src_edit)
@@ -88,7 +112,7 @@ class MainWindow(QMainWindow):
         basic_form.addRow("源文件夹:", src_row)
 
         # 目标输出目录
-        self.dest_edit = QLineEdit(self.settings.value("dest", ""))
+        self.dest_edit = DropLineEdit(self.settings.value("dest", ""))
         self.dest_btn = QPushButton("浏览")
         dest_row = QHBoxLayout()
         dest_row.addWidget(self.dest_edit)
@@ -121,7 +145,7 @@ class MainWindow(QMainWindow):
 
         # 手动分卷大小
         self.volume_edit = QLineEdit()
-        self.volume_edit.setPlaceholderText("留空自动检测，如 100m / 1g")
+        self.volume_edit.setPlaceholderText("留空自动检测")
         basic_form.addRow("分卷大小:", self.volume_edit)
 
         layout.addWidget(basic_group)
