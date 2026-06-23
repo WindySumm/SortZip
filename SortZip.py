@@ -32,6 +32,9 @@ def classify_files(src_dir, dest_root, custom_names=None):
             ext = file_path.suffix.lower()
             if custom_names and ext in custom_names:
                 folder_name = custom_names[ext]
+            elif custom_names is not None:
+                # 有自定义映射但当前扩展名未勾选 → 跳过
+                continue
             else:
                 folder_name = ext[1:] if ext else 'no_extension'
             target_dir = dest_root / folder_name

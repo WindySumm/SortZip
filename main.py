@@ -122,16 +122,19 @@ class MainWindow(QMainWindow):
         # 每包文件数
         self.group_size_spin = QSpinBox()
         self.group_size_spin.setRange(1, 9999)
-        self.group_size_spin.setValue(1)
+        self.group_size_spin.setValue(int(self.settings.value("group_size", 1)))
         basic_form.addRow("每包文件数:", self.group_size_spin)
 
         # 排序方式
+        sort_map_load = {"文件名": 0, "修改时间": 1}
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(["文件名", "修改时间"])
+        saved_sort = self.settings.value("sort_by", "文件名")
+        self.sort_combo.setCurrentIndex(sort_map_load.get(saved_sort, 0))
         basic_form.addRow("排序方式:", self.sort_combo)
 
         # 压缩密码（带显示/隐藏切换）
-        self.password_edit = QLineEdit()
+        self.password_edit = QLineEdit(self.settings.value("password", ""))
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_edit.setPlaceholderText("留空表示无密码")
         self.pwd_toggle_btn = QPushButton("显示")
@@ -144,7 +147,7 @@ class MainWindow(QMainWindow):
         basic_form.addRow("压缩密码:", pwd_row)
 
         # 手动分卷大小
-        self.volume_edit = QLineEdit()
+        self.volume_edit = QLineEdit(self.settings.value("volume", ""))
         self.volume_edit.setPlaceholderText("留空自动检测")
         basic_form.addRow("分卷大小:", self.volume_edit)
 
@@ -222,10 +225,11 @@ class MainWindow(QMainWindow):
         opt_layout = QHBoxLayout(opt_group)
 
         self.keep_cb = QCheckBox("保留原始文件")
+        self.keep_cb.setChecked(self.settings.value("keep_files", False, type=bool))
         self.double_cb = QCheckBox("二次打包 ( .zipp )")
-        self.double_cb.setChecked(True)
+        self.double_cb.setChecked(self.settings.value("double_compress", True, type=bool))
         self.auto_close_cb = QCheckBox("自动关闭 Bandizip 窗口")
-        self.auto_close_cb.setChecked(True)
+        self.auto_close_cb.setChecked(self.settings.value("auto_close", True, type=bool))
 
         opt_layout.addWidget(self.keep_cb)
         opt_layout.addWidget(self.double_cb)
@@ -257,10 +261,17 @@ class MainWindow(QMainWindow):
 
     # ======== 私有辅助方法 ========
 
-    # ---- 持久化：保存路径和映射状态 ----
+    # ---- 持久化：保存所有设置项 ----
     def _save_settings(self):
         self.settings.setValue("src", self.src_edit.text())
         self.settings.setValue("dest", self.dest_edit.text())
+        self.settings.setValue("group_size", self.group_size_spin.value())
+        self.settings.setValue("sort_by", self.sort_combo.currentText())
+        self.settings.setValue("password", self.password_edit.text())
+        self.settings.setValue("volume", self.volume_edit.text())
+        self.settings.setValue("keep_files", self.keep_cb.isChecked())
+        self.settings.setValue("double_compress", self.double_cb.isChecked())
+        self.settings.setValue("auto_close", self.auto_close_cb.isChecked())
         self._save_ext_state()
 
     # ---- 密码显示 / 隐藏切换 ----

@@ -34,16 +34,16 @@
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `src` | `str` | — | 源文件夹路径（首次为空，自动记住上次路径） |
-| `dest` | `str` | — | 目标根目录（首次为空，自动记住上次路径） |
-| `group_size` | `int` | `1` | 每组文件数 |
-| `password` | `str` | — | 压缩密码（留空无密码，非空时需 ≥ 8 位） |
-| `volume` | `str\|None` | `None` | 手动分卷大小如 `100m`，`None` 为自动 |
-| `custom_names` | `dict` | 31 条预置（默认全关） | 扩展名 → 文件夹名映射，带启用勾选，状态自动记忆 |
-| `sort_by` | `str` | `name` | 排序方式：`name` 或 `mtime` |
-| `keep_files` | `bool` | `False` | 压缩后是否保留原始文件 |
-| `double_compress` | `bool` | `True` | 是否二次打包为 `.zipp` |
-| `auto_close` | `bool` | `True` | 是否自动关闭 Bandizip 窗口 |
+| `src` | `str` | — | 源文件夹路径（支持拖入，自动记忆） |
+| `dest` | `str` | — | 目标根目录（支持拖入，自动记忆） |
+| `group_size` | `int` | `1` | 每组文件数（自动记忆） |
+| `sort_by` | `str` | `name` | 排序方式（自动记忆） |
+| `password` | `str` | — | 压缩密码（留空无密码，非空 ≥ 8 位，自动记忆） |
+| `volume` | `str\|None` | `None` | 手动分卷大小，留空自动检测（自动记忆） |
+| `custom_names` | `dict` | 31 条预置全关 | 扩展名 → 文件夹名映射，带勾选，未勾选的文件跳过（自动记忆） |
+| `keep_files` | `bool` | `False` | 压缩后是否保留原始文件（自动记忆） |
+| `double_compress` | `bool` | `True` | 是否二次打包为 `.zipp`（自动记忆） |
+| `auto_close` | `bool` | `True` | 是否自动关闭 Bandizip 窗口（自动记忆） |
 
 ---
 
