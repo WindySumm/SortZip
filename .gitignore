@@ -12,6 +12,9 @@ build/
 .vscode/
 .idea/
 
+# Assets
+icon.png
+
 # Windows
 Thumbs.db
 

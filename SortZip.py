@@ -20,6 +20,8 @@ CONFIG = {
 }
 # ===================================
 
+
+# ---- 文件分类：按扩展名将源文件移动到目标子目录 ----
 def classify_files(src_dir, dest_root, custom_names=None):
     src_path = Path(src_dir)
     dest_root = Path(dest_root)
@@ -37,6 +39,8 @@ def classify_files(src_dir, dest_root, custom_names=None):
             shutil.move(str(file_path), str(target_dir / file_path.name))
             print(f"移动: {file_path.name} -> {target_dir}")
 
+
+# ---- 顺序重命名：将每个目录中的文件按序号重命名 ----
 def rename_files_in_folders(dest_root, sort_by='name'):
     dest_root = Path(dest_root)
     for folder in dest_root.iterdir():
@@ -76,6 +80,8 @@ def rename_files_in_folders(dest_root, sort_by='name'):
             src.rename(dst)
             print(f"重命名: {src.name} -> {dst.name}")
 
+
+# ---- 自动计算分卷大小 ----
 def get_auto_volume(total_size_bytes):
     four_gb = 4 * 1024 * 1024 * 1024
     if total_size_bytes < four_gb:
@@ -92,6 +98,8 @@ def get_auto_volume(total_size_bytes):
         mb = (volume_bytes + (1024*1024 - 1)) // (1024*1024)
         return f"{mb}m"
 
+
+# ---- 分组压缩：调用 Bandizip 对每组文件进行分卷压缩 + 可选二次打包 ----
 def group_compress(dest_root, group_size, password, volume_size=None,
                    bandizip_path='bandizip', keep_files=False, double_compress=True,
                    auto_close=True):
@@ -99,25 +107,27 @@ def group_compress(dest_root, group_size, password, volume_size=None,
     for folder in dest_root.iterdir():
         if not folder.is_dir():
             continue
+        # 筛选出序号重命名后的文件（排除已有的压缩包）
         files = [f for f in folder.iterdir() if f.is_file()]
         files = [f for f in files if f.suffix.lower() != '.zip' and f.stem.isdigit()]
         files.sort(key=lambda f: int(f.stem))
         if not files:
             continue
 
+        # 按 group_size 分组
         for i in range(0, len(files), group_size):
             group = files[i:i+group_size]
             start_num = int(group[0].stem)
             end_num = int(group[-1].stem)
 
-            # ---------- 定义两种基名 ----------
+            # 定义两种基名
             base_name = f"{start_num}-{end_num}"                # 最终打包文件名（不带后缀）
             first_name = f"{start_num}-{end_num}-First"         # 分卷文件名（带 -First）
 
             zip_name = f"{first_name}.zip"
             zip_path = folder / zip_name
 
-            # ---------- 第一次分卷压缩 ----------
+            # ---- 第一次分卷压缩 ----
             if volume_size is None:
                 total_bytes = sum(f.stat().st_size for f in group)
                 auto_vol = get_auto_volume(total_bytes)
@@ -125,6 +135,7 @@ def group_compress(dest_root, group_size, password, volume_size=None,
             else:
                 auto_vol = None
 
+            # 构建 Bandizip 命令行参数
             cmd = [bandizip_path, 'a']
             if password:
                 cmd.extend(['-p:' + password])
@@ -152,7 +163,7 @@ def group_compress(dest_root, group_size, password, volume_size=None,
                 print(f"错误: 找不到可执行文件 '{bandizip_path}'，请确保已安装并加入PATH。")
                 return
 
-            # ---------- 二次打包 ----------
+            # ---- 二次打包：将分卷文件再次压缩为 .zipp ----
             if double_compress:
                 volume_files = list(folder.glob(f"{first_name}.*"))
                 volume_files = [f for f in volume_files if f.name != f"最终压缩{base_name}.zip"]
@@ -190,6 +201,8 @@ def group_compress(dest_root, group_size, password, volume_size=None,
             else:
                 print("跳过二次打包（已关闭）")
 
+
+# ---- 从配置字典执行完整任务流程 ----
 def main_from_config(config):
     """从配置字典执行任务"""
     print("=== 使用配置参数运行 ===")
@@ -231,9 +244,12 @@ def main_from_config(config):
     )
     print("所有任务完成！")
 
+
+# ---- 命令行入口（仅供直接运行 SortZip.py 使用） ----
 def main():
     """只使用顶部的 CONFIG 配置运行"""
     main_from_config(CONFIG)
+
 
 if __name__ == '__main__':
     main()
