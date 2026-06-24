@@ -12,12 +12,22 @@ from PySide6.QtWidgets import (
     QGroupBox, QFormLayout, QLineEdit, QSpinBox, QComboBox,
     QCheckBox, QPushButton, QProgressBar, QTextEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QLabel, QMessageBox, QFileDialog, QDialog,
-    QStackedWidget,
+    QStackedWidget, QScrollArea,
 )
 from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot, QSettings
 from PySide6.QtGui import QIcon, QTextCursor, QDragEnterEvent, QDropEvent
 
 import SortZip
+
+
+# ---- 扩展名分类定义 ----
+EXT_CATEGORIES = {
+    "视频": [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm"],
+    "音乐": [".mp3", ".flac", ".wav", ".aac", ".ogg", ".m4a"],
+    "图片": [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg"],
+    "文档": [".txt", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".pdf"],
+    "压缩包": [".zip", ".rar", ".7z"],
+}
 
 
 # ---- 支持拖入文件夹的输入框 ----
@@ -239,17 +249,19 @@ class MainWindow(QMainWindow):
         map_layout.setContentsMargins(12, 12, 12, 12)
         map_layout.setSpacing(8)
 
-        ext_group = QGroupBox("扩展名映射")
-        ext_inner = QVBoxLayout(ext_group)
+        # --- 已启用映射 ---
+        enabled_group = QGroupBox("已启用映射")
+        enabled_layout = QVBoxLayout(enabled_group)
 
         self.ext_table = QTableWidget(0, 3)
         self.ext_table.setHorizontalHeaderLabels(["启用", "扩展名", "文件夹名"])
-        self.ext_table.setMinimumHeight(118)
+        self.ext_table.setMinimumHeight(100)
         self.ext_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.ext_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         self.ext_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         self.ext_table.horizontalHeader().setStretchLastSection(False)
-        ext_inner.addWidget(self.ext_table, 1)
+        self.ext_table.cellChanged.connect(self._on_table_cell_changed)
+        enabled_layout.addWidget(self.ext_table, 1)
 
         ext_btn_row = QHBoxLayout()
         self.ext_add_btn = QPushButton("添加")
@@ -257,26 +269,40 @@ class MainWindow(QMainWindow):
         ext_btn_row.addWidget(self.ext_add_btn)
         ext_btn_row.addWidget(self.ext_del_btn)
         ext_btn_row.addStretch()
-        ext_inner.addLayout(ext_btn_row)
+        enabled_layout.addLayout(ext_btn_row)
 
-        map_layout.addWidget(ext_group, 1)
+        map_layout.addWidget(enabled_group)
+
+        # --- 扩展名选择区（滚动） ---
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        picker_content = QWidget()
+        picker_layout = QVBoxLayout(picker_content)
+        picker_layout.setSpacing(8)
+
+        self._ext_pickers = {}
+
+        for cat_name, exts in EXT_CATEGORIES.items():
+            cat_group = QGroupBox(cat_name)
+            cat_grid = QGridLayout(cat_group)
+            for i, ext in enumerate(exts):
+                chk = QCheckBox(ext)
+                chk.stateChanged.connect(
+                    lambda state, e=ext, c=cat_name: self._on_ext_picker_toggled(e, c, state == 2)
+                )
+                cat_grid.addWidget(chk, i // 3, i % 3)
+                self._ext_pickers[ext] = chk
+            picker_layout.addWidget(cat_group)
+
+        picker_layout.addStretch()
+        scroll.setWidget(picker_content)
+        map_layout.addWidget(scroll, 1)
 
         if not self._load_ext_state():
-            for ext, name in [
-                (".mp4", "视频"), (".mkv", "视频"), (".avi", "视频"),
-                (".mov", "视频"), (".wmv", "视频"), (".flv", "视频"),
-                (".webm", "视频"),
-                (".mp3", "音乐"), (".flac", "音乐"), (".wav", "音乐"),
-                (".aac", "音乐"), (".ogg", "音乐"), (".m4a", "音乐"),
-                (".jpg", "图片"), (".jpeg", "图片"), (".png", "图片"),
-                (".gif", "图片"), (".bmp", "图片"), (".webp", "图片"),
-                (".svg", "图片"),
-                (".txt", "文档"), (".doc", "文档"), (".docx", "文档"),
-                (".xls", "文档"), (".xlsx", "文档"), (".ppt", "文档"),
-                (".pptx", "文档"), (".pdf", "文档"),
-                (".zip", "压缩包"), (".rar", "压缩包"), (".7z", "压缩包"),
-            ]:
-                self._add_ext_row(ext, name, checked=False)
+            # 首次启动：空表格，picker 全未勾选 —— 无需额外操作
+            pass
 
         self.stack.addWidget(map_page)
 
@@ -409,9 +435,11 @@ class MainWindow(QMainWindow):
             checked = self.settings.value("checked", False, type=bool)
             ext = self.settings.value("ext", "")
             name = self.settings.value("name", "")
-            self._add_ext_row(ext, name, checked=checked)
+            if checked and ext:
+                self._add_ext_row(ext, name, checked=True)
         self.settings.endArray()
-        return True
+        self._sync_pickers_from_table()
+        return bool(self.ext_table.rowCount())
 
     # ---- 浏览文件夹 ----
     def _browse_folder(self, edit):
@@ -434,7 +462,68 @@ class MainWindow(QMainWindow):
     def _del_ext_row(self):
         rows = set(i.row() for i in self.ext_table.selectedIndexes())
         for r in sorted(rows, reverse=True):
+            ext_item = self.ext_table.item(r, 1)
+            if ext_item:
+                ext = ext_item.text().strip()
+                if ext in self._ext_pickers:
+                    self._ext_pickers[ext].blockSignals(True)
+                    self._ext_pickers[ext].setChecked(False)
+                    self._ext_pickers[ext].blockSignals(False)
             self.ext_table.removeRow(r)
+
+    # ---- 底部 picker 勾选 → 更新顶部表格 ----
+    def _on_ext_picker_toggled(self, ext, category, checked):
+        self.ext_table.blockSignals(True)
+        if checked:
+            found = False
+            for r in range(self.ext_table.rowCount()):
+                item = self.ext_table.item(r, 1)
+                if item and item.text().strip() == ext:
+                    chk = self.ext_table.item(r, 0)
+                    if chk:
+                        chk.setCheckState(Qt.CheckState.Checked)
+                    found = True
+                    break
+            if not found:
+                self._add_ext_row(ext, category, checked=True)
+        else:
+            for r in range(self.ext_table.rowCount() - 1, -1, -1):
+                item = self.ext_table.item(r, 1)
+                if item and item.text().strip() == ext:
+                    self.ext_table.removeRow(r)
+                    break
+        self.ext_table.blockSignals(False)
+
+    # ---- 顶部表格勾选变化 → 同步底部 picker ----
+    def _on_table_cell_changed(self, row, col):
+        if col != 0:
+            return
+        chk_item = self.ext_table.item(row, 0)
+        ext_item = self.ext_table.item(row, 1)
+        if not ext_item:
+            return
+        ext = ext_item.text().strip()
+        checked = chk_item and chk_item.checkState() == Qt.CheckState.Checked
+        if ext in self._ext_pickers:
+            self._ext_pickers[ext].blockSignals(True)
+            self._ext_pickers[ext].setChecked(checked)
+            self._ext_pickers[ext].blockSignals(False)
+
+    # ---- 从表格勾选状态同步所有底部 picker ----
+    def _sync_pickers_from_table(self):
+        for chk in self._ext_pickers.values():
+            chk.blockSignals(True)
+            chk.setChecked(False)
+            chk.blockSignals(False)
+        for r in range(self.ext_table.rowCount()):
+            chk_item = self.ext_table.item(r, 0)
+            ext_item = self.ext_table.item(r, 1)
+            if chk_item and ext_item and chk_item.checkState() == Qt.CheckState.Checked:
+                ext = ext_item.text().strip()
+                if ext in self._ext_pickers:
+                    self._ext_pickers[ext].blockSignals(True)
+                    self._ext_pickers[ext].setChecked(True)
+                    self._ext_pickers[ext].blockSignals(False)
 
     # ---- 从 UI 控件取值，构建配置字典 ----
     def _build_config(self):
