@@ -22,12 +22,54 @@ import SortZip
 
 # ---- 扩展名分类定义 ----
 EXT_CATEGORIES = {
-    "视频": [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm"],
-    "音乐": [".mp3", ".flac", ".wav", ".aac", ".ogg", ".m4a"],
-    "图片": [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg"],
-    "文档": [".txt", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".pdf"],
-    "压缩包": [".zip", ".rar", ".7z"],
+    "视频": [
+        ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
+        ".m4v", ".3gp", ".rmvb", ".mpg", ".mpeg", ".vob", ".ts",
+    ],
+    "音乐": [
+        ".mp3", ".flac", ".wav", ".aac", ".ogg", ".m4a",
+        ".wma", ".opus", ".aiff", ".mid", ".midi", ".amr",
+    ],
+    "图片": [
+        ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg",
+        ".tiff", ".tif", ".raw", ".psd", ".heic", ".ico",
+    ],
+    "文档": [
+        ".txt", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".pdf",
+        ".csv", ".json", ".xml", ".md", ".html", ".htm",
+        ".log", ".epub", ".rtf", ".yaml", ".yml", ".ini",
+    ],
+    "压缩包": [
+        ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso",
+    ],
+    "程序": [
+        ".exe", ".msi", ".bat", ".cmd", ".ps1", ".sh",
+        ".py", ".js", ".vbs", ".dll",
+    ],
+    "字体": [
+        ".ttf", ".otf", ".woff", ".woff2", ".eot",
+    ],
 }
+
+
+# ---- Windows 文件夹名校验 ----
+_INVALID_FOLDER_CHARS = set(r'\/:*?"<>|')
+_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | \
+    {f"COM{i}" for i in range(1, 10)} | \
+    {f"LPT{i}" for i in range(1, 10)}
+
+
+def _validate_win_folder_name(name):
+    if not name:
+        return "文件夹名不能为空"
+    for c in name:
+        if c in _INVALID_FOLDER_CHARS:
+            return f"文件夹名不能包含字符：{c}"
+    if name[-1] in (' ', '.'):
+        return "文件夹名不能以空格或句点结尾"
+    if name.upper() in _RESERVED_NAMES:
+        return f"文件夹名不能是 Windows 保留名称：{name}"
+    return None
 
 
 # ---- 支持拖入文件夹的输入框 ----
@@ -261,6 +303,8 @@ class MainWindow(QMainWindow):
         self.ext_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         self.ext_table.horizontalHeader().setStretchLastSection(False)
         self.ext_table.cellChanged.connect(self._on_table_cell_changed)
+        self.ext_table.cellPressed.connect(self._on_ext_cell_pressed)
+        self._edit_old_folder_name = ""
         enabled_layout.addWidget(self.ext_table, 1)
 
         ext_btn_row = QHBoxLayout()
@@ -435,8 +479,8 @@ class MainWindow(QMainWindow):
             checked = self.settings.value("checked", False, type=bool)
             ext = self.settings.value("ext", "")
             name = self.settings.value("name", "")
-            if checked and ext:
-                self._add_ext_row(ext, name, checked=True)
+            if ext:
+                self._add_ext_row(ext, name, checked=checked)
         self.settings.endArray()
         self._sync_pickers_from_table()
         return bool(self.ext_table.rowCount())
@@ -494,20 +538,44 @@ class MainWindow(QMainWindow):
                     break
         self.ext_table.blockSignals(False)
 
-    # ---- 顶部表格勾选变化 → 同步底部 picker ----
+    # ---- 顶部表格编辑 → 验证 / 同步 ----
     def _on_table_cell_changed(self, row, col):
-        if col != 0:
+        if col == 0:
+            chk_item = self.ext_table.item(row, 0)
+            ext_item = self.ext_table.item(row, 1)
+            if not ext_item:
+                return
+            ext = ext_item.text().strip()
+            checked = chk_item and chk_item.checkState() == Qt.CheckState.Checked
+            if ext in self._ext_pickers:
+                self._ext_pickers[ext].blockSignals(True)
+                self._ext_pickers[ext].setChecked(checked)
+                self._ext_pickers[ext].blockSignals(False)
+            if not checked:
+                self.ext_table.blockSignals(True)
+                self.ext_table.removeRow(row)
+                self.ext_table.blockSignals(False)
+        elif col == 2:
+            self._validate_folder_cell(row, col)
+
+    def _on_ext_cell_pressed(self, row, col):
+        if col == 2:
+            self._edit_old_folder_name = ""
+            item = self.ext_table.item(row, col)
+            if item:
+                self._edit_old_folder_name = item.text()
+
+    def _validate_folder_cell(self, row, col):
+        item = self.ext_table.item(row, col)
+        if not item:
             return
-        chk_item = self.ext_table.item(row, 0)
-        ext_item = self.ext_table.item(row, 1)
-        if not ext_item:
-            return
-        ext = ext_item.text().strip()
-        checked = chk_item and chk_item.checkState() == Qt.CheckState.Checked
-        if ext in self._ext_pickers:
-            self._ext_pickers[ext].blockSignals(True)
-            self._ext_pickers[ext].setChecked(checked)
-            self._ext_pickers[ext].blockSignals(False)
+        name = item.text().strip()
+        error = _validate_win_folder_name(name)
+        if error:
+            self._show_styled_dialog("文件夹名无效", error, width=360, height=180)
+            self.ext_table.blockSignals(True)
+            item.setText(getattr(self, '_edit_old_folder_name', ''))
+            self.ext_table.blockSignals(False)
 
     # ---- 从表格勾选状态同步所有底部 picker ----
     def _sync_pickers_from_table(self):
