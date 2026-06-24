@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QFormLayout, QLineEdit, QSpinBox, QComboBox,
     QCheckBox, QPushButton, QProgressBar, QTextEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QLabel, QMessageBox, QFileDialog, QDialog,
+    QStackedWidget,
 )
 from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot, QSettings
 from PySide6.QtGui import QIcon, QTextCursor, QDragEnterEvent, QDropEvent
@@ -115,22 +116,72 @@ class MainWindow(QMainWindow):
         icon_path = _resource_path("icon.png")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
-        self.setMinimumSize(640, 680)
+        self.setMinimumSize(640, 600)
 
         # ---- 本地持久化配置 ----
         self.settings = QSettings("SortZip", "SortZip")
 
-        # ---- 中央容器 ----
+        # ---- 中央容器：左导航 + 右内容 ----
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
-        layout.setSpacing(8)
+        main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # ======== 基本设置区域 ========
+        # ======== 左侧导航栏 ========
+        sidebar = QWidget()
+        sidebar.setFixedWidth(120)
+        sidebar.setStyleSheet("background-color: #f5f5f5;")
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(8, 16, 8, 16)
+        sidebar_layout.setSpacing(4)
+
+        self.sidebar_btns = []
+        for i, text in enumerate(["文件", "映射", "开始", "设置"]):
+            btn = QPushButton(text)
+            btn.setFixedHeight(40)
+            btn.setProperty("active", "false")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda checked, idx=i: self._switch_page(idx))
+            sidebar_layout.addWidget(btn)
+            self.sidebar_btns.append(btn)
+
+        sidebar_layout.addStretch()
+
+        sidebar.setStyleSheet("""
+            QPushButton {
+                text-align: left;
+                padding: 8px 14px;
+                border: none;
+                border-radius: 6px;
+                font-size: 13px;
+                background-color: transparent;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+            }
+            QPushButton[active="true"] {
+                background-color: #0078d4;
+                color: white;
+                font-weight: bold;
+            }
+        """)
+
+        main_layout.addWidget(sidebar)
+
+        # ======== 右侧内容区（页面栈） ========
+        self.stack = QStackedWidget()
+        main_layout.addWidget(self.stack, 1)
+
+        # ---- 页面 0：文件 ----
+        file_page = QWidget()
+        file_layout = QVBoxLayout(file_page)
+        file_layout.setContentsMargins(12, 12, 12, 12)
+        file_layout.setSpacing(8)
+
         basic_group = QGroupBox("基本设置")
         basic_form = QFormLayout(basic_group)
 
-        # 源文件夹
         self.src_edit = DropLineEdit(self.settings.value("src", ""))
         self.src_btn = QPushButton("浏览")
         src_row = QHBoxLayout()
@@ -138,7 +189,6 @@ class MainWindow(QMainWindow):
         src_row.addWidget(self.src_btn)
         basic_form.addRow("源文件夹:", src_row)
 
-        # 目标输出目录
         self.dest_edit = DropLineEdit(self.settings.value("dest", ""))
         self.dest_btn = QPushButton("浏览")
         dest_row = QHBoxLayout()
@@ -146,13 +196,11 @@ class MainWindow(QMainWindow):
         dest_row.addWidget(self.dest_btn)
         basic_form.addRow("目标目录:", dest_row)
 
-        # 每包文件数
         self.group_size_spin = QSpinBox()
         self.group_size_spin.setRange(1, 9999)
         self.group_size_spin.setValue(int(self.settings.value("group_size", 1)))
         basic_form.addRow("每包文件数:", self.group_size_spin)
 
-        # 排序方式
         sort_map_load = {"文件名": 0, "修改时间": 1}
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(["文件名", "修改时间"])
@@ -160,7 +208,6 @@ class MainWindow(QMainWindow):
         self.sort_combo.setCurrentIndex(sort_map_load.get(saved_sort, 0))
         basic_form.addRow("排序方式:", self.sort_combo)
 
-        # 压缩密码（带显示/隐藏切换）
         self.password_edit = QLineEdit(self.settings.value("password", ""))
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_edit.setPlaceholderText("留空表示无密码")
@@ -173,18 +220,28 @@ class MainWindow(QMainWindow):
         pwd_row.addWidget(self.pwd_toggle_btn)
         basic_form.addRow("压缩密码:", pwd_row)
 
-        # 手动分卷大小
         self.volume_edit = QLineEdit(self.settings.value("volume", ""))
         self.volume_edit.setPlaceholderText("留空自动检测")
         basic_form.addRow("分卷大小:", self.volume_edit)
 
-        layout.addWidget(basic_group)
+        file_layout.addWidget(basic_group)
 
-        # ======== 扩展名映射区域 ========
+        self.no_rename_cb = QCheckBox("不进行重命名（保留原文件名）")
+        self.no_rename_cb.setChecked(self.settings.value("skip_rename", False, type=bool))
+        file_layout.addWidget(self.no_rename_cb)
+
+        file_layout.addStretch()
+        self.stack.addWidget(file_page)
+
+        # ---- 页面 1：映射 ----
+        map_page = QWidget()
+        map_layout = QVBoxLayout(map_page)
+        map_layout.setContentsMargins(12, 12, 12, 12)
+        map_layout.setSpacing(8)
+
         ext_group = QGroupBox("扩展名映射")
-        ext_layout = QVBoxLayout(ext_group)
+        ext_inner = QVBoxLayout(ext_group)
 
-        # 映射表格：启用勾选 | 扩展名 | 文件夹名
         self.ext_table = QTableWidget(0, 3)
         self.ext_table.setHorizontalHeaderLabels(["启用", "扩展名", "文件夹名"])
         self.ext_table.setMinimumHeight(118)
@@ -192,62 +249,43 @@ class MainWindow(QMainWindow):
         self.ext_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         self.ext_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         self.ext_table.horizontalHeader().setStretchLastSection(False)
-        ext_layout.addWidget(self.ext_table, 1)
+        ext_inner.addWidget(self.ext_table, 1)
 
-        # 表格操作按钮
         ext_btn_row = QHBoxLayout()
         self.ext_add_btn = QPushButton("添加")
         self.ext_del_btn = QPushButton("删除选中")
         ext_btn_row.addWidget(self.ext_add_btn)
         ext_btn_row.addWidget(self.ext_del_btn)
         ext_btn_row.addStretch()
-        ext_layout.addLayout(ext_btn_row)
+        ext_inner.addLayout(ext_btn_row)
 
-        # 首次启动加载预置映射，后续从 QSettings 恢复用户状态
+        map_layout.addWidget(ext_group, 1)
+
         if not self._load_ext_state():
             for ext, name in [
-                # ---- 视频 ----
-                (".mp4", "视频"),
-                (".mkv", "视频"),
-                (".avi", "视频"),
-                (".mov", "视频"),
-                (".wmv", "视频"),
-                (".flv", "视频"),
+                (".mp4", "视频"), (".mkv", "视频"), (".avi", "视频"),
+                (".mov", "视频"), (".wmv", "视频"), (".flv", "视频"),
                 (".webm", "视频"),
-                # ---- 音乐 ----
-                (".mp3", "音乐"),
-                (".flac", "音乐"),
-                (".wav", "音乐"),
-                (".aac", "音乐"),
-                (".ogg", "音乐"),
-                (".m4a", "音乐"),
-                # ---- 图片 ----
-                (".jpg", "图片"),
-                (".jpeg", "图片"),
-                (".png", "图片"),
-                (".gif", "图片"),
-                (".bmp", "图片"),
-                (".webp", "图片"),
+                (".mp3", "音乐"), (".flac", "音乐"), (".wav", "音乐"),
+                (".aac", "音乐"), (".ogg", "音乐"), (".m4a", "音乐"),
+                (".jpg", "图片"), (".jpeg", "图片"), (".png", "图片"),
+                (".gif", "图片"), (".bmp", "图片"), (".webp", "图片"),
                 (".svg", "图片"),
-                # ---- 文档 ----
-                (".txt", "文档"),
-                (".doc", "文档"),
-                (".docx", "文档"),
-                (".xls", "文档"),
-                (".xlsx", "文档"),
-                (".ppt", "文档"),
-                (".pptx", "文档"),
-                (".pdf", "文档"),
-                # ---- 压缩包 ----
-                (".zip", "压缩包"),
-                (".rar", "压缩包"),
-                (".7z", "压缩包"),
+                (".txt", "文档"), (".doc", "文档"), (".docx", "文档"),
+                (".xls", "文档"), (".xlsx", "文档"), (".ppt", "文档"),
+                (".pptx", "文档"), (".pdf", "文档"),
+                (".zip", "压缩包"), (".rar", "压缩包"), (".7z", "压缩包"),
             ]:
                 self._add_ext_row(ext, name, checked=False)
 
-        layout.addWidget(ext_group, 1)
+        self.stack.addWidget(map_page)
 
-        # ======== 选项区域 ========
+        # ---- 页面 2：开始 ----
+        start_page = QWidget()
+        start_layout = QVBoxLayout(start_page)
+        start_layout.setContentsMargins(12, 12, 12, 12)
+        start_layout.setSpacing(8)
+
         opt_group = QGroupBox("选项")
         opt_layout = QHBoxLayout(opt_group)
 
@@ -257,18 +295,14 @@ class MainWindow(QMainWindow):
         self.double_cb.setChecked(self.settings.value("double_compress", True, type=bool))
         self.auto_close_cb = QCheckBox("自动关闭 Bandizip 窗口")
         self.auto_close_cb.setChecked(self.settings.value("auto_close", True, type=bool))
-        self.no_rename_cb = QCheckBox("不进行重命名")
-        self.no_rename_cb.setChecked(self.settings.value("skip_rename", False, type=bool))
 
         opt_layout.addWidget(self.keep_cb)
         opt_layout.addWidget(self.double_cb)
         opt_layout.addWidget(self.auto_close_cb)
-        opt_layout.addWidget(self.no_rename_cb)
         opt_layout.addStretch()
 
-        layout.addWidget(opt_group)
+        start_layout.addWidget(opt_group)
 
-        # ======== 进度条 + 执行 / 取消按钮 ========
         progress_row = QHBoxLayout()
         self.progress_bar = QProgressBar()
         self.progress_bar.setMinimum(0)
@@ -285,16 +319,28 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(False)
         progress_row.addWidget(self.run_btn)
         progress_row.addWidget(self.cancel_btn)
-        layout.addLayout(progress_row)
+        start_layout.addLayout(progress_row)
 
-        # ======== 日志输出区域 ========
-        log_label = QLabel("输出日志:")
-        layout.addWidget(log_label)
+        start_layout.addWidget(QLabel("输出日志:"))
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(160)
-        layout.addWidget(self.log_text, 0)
+        start_layout.addWidget(self.log_text, 1)
+
+        self.stack.addWidget(start_page)
+
+        # ---- 页面 3：设置 ----
+        settings_page = QWidget()
+        settings_layout = QVBoxLayout(settings_page)
+        settings_layout.setContentsMargins(12, 12, 12, 12)
+        placeholder = QLabel("设置功能开发中...")
+        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder.setStyleSheet("color: #888; font-size: 14px;")
+        settings_layout.addWidget(placeholder)
+        settings_layout.addStretch()
+        self.stack.addWidget(settings_page)
+
+        self._switch_page(0)
 
         # ======== 信号连接 ========
         self.src_btn.clicked.connect(lambda: self._browse_folder(self.src_edit))
@@ -303,6 +349,16 @@ class MainWindow(QMainWindow):
         self.ext_del_btn.clicked.connect(self._del_ext_row)
         self.run_btn.clicked.connect(self._run)
         self.cancel_btn.clicked.connect(self._cancel)
+
+    # ---- 页面切换 ----
+    def _switch_page(self, index):
+        for i, btn in enumerate(self.sidebar_btns):
+            btn.setProperty("active", "true" if i == index else "false")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+        self.stack.setCurrentIndex(index)
+        if index == 1:
+            self._resize_ext_columns()
 
     # ======== 私有辅助方法 ========
 
