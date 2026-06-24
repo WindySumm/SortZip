@@ -257,10 +257,13 @@ class MainWindow(QMainWindow):
         self.double_cb.setChecked(self.settings.value("double_compress", True, type=bool))
         self.auto_close_cb = QCheckBox("自动关闭 Bandizip 窗口")
         self.auto_close_cb.setChecked(self.settings.value("auto_close", True, type=bool))
+        self.no_rename_cb = QCheckBox("不进行重命名")
+        self.no_rename_cb.setChecked(self.settings.value("skip_rename", False, type=bool))
 
         opt_layout.addWidget(self.keep_cb)
         opt_layout.addWidget(self.double_cb)
         opt_layout.addWidget(self.auto_close_cb)
+        opt_layout.addWidget(self.no_rename_cb)
         opt_layout.addStretch()
 
         layout.addWidget(opt_group)
@@ -314,6 +317,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("keep_files", self.keep_cb.isChecked())
         self.settings.setValue("double_compress", self.double_cb.isChecked())
         self.settings.setValue("auto_close", self.auto_close_cb.isChecked())
+        self.settings.setValue("skip_rename", self.no_rename_cb.isChecked())
         self._save_ext_state()
 
     # ---- 密码显示 / 隐藏切换 ----
@@ -404,6 +408,7 @@ class MainWindow(QMainWindow):
             'keep_files': self.keep_cb.isChecked(),
             'double_compress': self.double_cb.isChecked(),
             'auto_close': self.auto_close_cb.isChecked(),
+            'skip_rename': self.no_rename_cb.isChecked(),
         }
 
     # ---- 统一风格的信息弹窗 ----

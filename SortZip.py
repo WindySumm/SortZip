@@ -126,7 +126,8 @@ def get_auto_volume(total_size_bytes):
 # ---- 分组压缩：调用 Bandizip 对每组文件进行分卷压缩 + 可选二次打包 ----
 def group_compress(dest_root, group_size, password, volume_size=None,
                    bandizip_path='bandizip', keep_files=False, double_compress=True,
-                   auto_close=True, on_progress=None, cancel_check=None):
+                   auto_close=True, on_progress=None, cancel_check=None,
+                   skip_rename=False, sort_by='name'):
     dest_root = Path(dest_root)
     folders = [f for f in dest_root.iterdir() if f.is_dir()]
 
@@ -134,18 +135,29 @@ def group_compress(dest_root, group_size, password, volume_size=None,
     all_groups = []
     for folder in folders:
         files = [f for f in folder.iterdir() if f.is_file()]
-        files = [f for f in files if f.suffix.lower() != '.zip' and f.stem.isdigit()]
-        files.sort(key=lambda f: int(f.stem))
+        files = [f for f in files if f.suffix.lower() != '.zip']
+        if not skip_rename:
+            files = [f for f in files if f.stem.isdigit()]
+            files.sort(key=lambda f: int(f.stem))
+        else:
+            if sort_by == 'mtime':
+                files.sort(key=lambda f: f.stat().st_mtime)
+            else:
+                files.sort(key=lambda f: f.name)
         for i in range(0, len(files), group_size):
-            all_groups.append((folder, files[i:i+group_size]))
+            all_groups.append((folder, files[i:i+group_size], i))
 
     total = len(all_groups)
-    for idx, (folder, group) in enumerate(all_groups, start=1):
+    for idx, (folder, group, start_i) in enumerate(all_groups, start=1):
         if _check_cancel(cancel_check):
             return
 
-        start_num = int(group[0].stem)
-        end_num = int(group[-1].stem)
+        if skip_rename:
+            start_num = start_i + 1
+            end_num = start_i + len(group)
+        else:
+            start_num = int(group[0].stem)
+            end_num = int(group[-1].stem)
         base_name = f"{start_num}-{end_num}"
         first_name = f"{start_num}-{end_num}-First"
         zip_name = f"{first_name}.zip"
@@ -246,6 +258,7 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
     src = config['src']
     dest = config['dest']
     custom_names = config.get('custom_names', {})
+    skip_rename = config.get('skip_rename', False)
 
     if _check_cancel(cancel_check):
         return
@@ -257,11 +270,14 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
 
     if _check_cancel(cancel_check):
         return
-    print("开始重命名...")
-    rename_files_in_folders(dest, config['sort_by'],
-                            on_progress=lambda c, t, m: on_progress(30, 40, c, t, m) if on_progress else None,
-                            cancel_check=cancel_check)
-    print("重命名完成。")
+    if not skip_rename:
+        print("开始重命名...")
+        rename_files_in_folders(dest, config['sort_by'],
+                                on_progress=lambda c, t, m: on_progress(30, 40, c, t, m) if on_progress else None,
+                                cancel_check=cancel_check)
+        print("重命名完成。")
+    else:
+        print("跳过重命名（已关闭）。")
 
     if _check_cancel(cancel_check):
         return
@@ -277,6 +293,8 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
         auto_close=config.get('auto_close', True),
         on_progress=lambda c, t, m: on_progress(40, 100, c, t, m) if on_progress else None,
         cancel_check=cancel_check,
+        skip_rename=skip_rename,
+        sort_by=config.get('sort_by', 'name'),
     )
     print("所有任务完成！")
 
