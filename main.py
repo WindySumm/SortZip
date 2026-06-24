@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QFormLayout, QLineEdit, QSpinBox, QComboBox,
     QCheckBox, QPushButton, QProgressBar, QTextEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QLabel, QMessageBox, QFileDialog, QDialog,
-    QStackedWidget, QScrollArea,
+    QStackedWidget, QScrollArea, QGridLayout,
 )
 from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot, QSettings
 from PySide6.QtGui import QIcon, QTextCursor, QDragEnterEvent, QDropEvent
