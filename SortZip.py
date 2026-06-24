@@ -28,8 +28,8 @@ def _check_cancel(cancel_check):
     return False
 
 
-# ---- 文件分类：按扩展名将源文件移动到目标子目录 ----
-def classify_files(src_dir, dest_root, custom_names=None, on_progress=None, cancel_check=None):
+# ---- 文件分类：按扩展名将源文件复制/移动到目标子目录 ----
+def classify_files(src_dir, dest_root, custom_names=None, on_progress=None, cancel_check=None, keep_files=False):
     src_path = Path(src_dir)
     dest_root = Path(dest_root)
     dest_root.mkdir(parents=True, exist_ok=True)
@@ -49,8 +49,12 @@ def classify_files(src_dir, dest_root, custom_names=None, on_progress=None, canc
             folder_name = ext[1:] if ext else 'no_extension'
         target_dir = dest_root / folder_name
         target_dir.mkdir(exist_ok=True)
-        shutil.move(str(file_path), str(target_dir / file_path.name))
-        print(f"移动: {file_path.name} -> {target_dir}")
+        if keep_files:
+            shutil.copy2(str(file_path), str(target_dir / file_path.name))
+            print(f"复制: {file_path.name} -> {target_dir}")
+        else:
+            shutil.move(str(file_path), str(target_dir / file_path.name))
+            print(f"移动: {file_path.name} -> {target_dir}")
         if on_progress:
             on_progress(idx, total, f"分类: {file_path.name}")
 
@@ -265,7 +269,8 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
     print("开始文件分类...")
     classify_files(src, dest, custom_names,
                    on_progress=lambda c, t, m: on_progress(0, 30, c, t, m) if on_progress else None,
-                   cancel_check=cancel_check)
+                   cancel_check=cancel_check,
+                   keep_files=config.get('keep_files', False))
     print("分类完成。")
 
     if _check_cancel(cancel_check):
@@ -288,7 +293,7 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
         password=config['password'],
         volume_size=config['volume'],
         bandizip_path=config['bandizip'],
-        keep_files=config['keep_files'],
+        keep_files=False,  # 分类阶段已决定复制/移动，压缩后一律清理
         double_compress=config['double_compress'],
         auto_close=config.get('auto_close', True),
         on_progress=lambda c, t, m: on_progress(40, 100, c, t, m) if on_progress else None,
