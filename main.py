@@ -14,8 +14,8 @@ from PySide6.QtWidgets import (
     QHeaderView, QLabel, QMessageBox, QFileDialog, QDialog,
     QStackedWidget, QScrollArea, QGridLayout,
 )
-from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot, QSettings
-from PySide6.QtGui import QIcon, QTextCursor, QDragEnterEvent, QDropEvent
+from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot, QSettings, QUrl
+from PySide6.QtGui import QIcon, QTextCursor, QDesktopServices, QDragEnterEvent, QDropEvent
 
 import SortZip
 
@@ -70,6 +70,70 @@ def _validate_win_folder_name(name):
     if name.upper() in _RESERVED_NAMES:
         return f"文件夹名不能是 Windows 保留名称：{name}"
     return None
+
+
+# ---- 暗色主题样式表 ----
+DARK_QSS = """
+QMainWindow, QDialog {
+    background-color: #2b2b2b;
+    color: #f0f0f0;
+}
+QGroupBox {
+    border: 1px solid #555;
+    border-radius: 6px;
+    margin-top: 12px;
+    font-weight: bold;
+    color: #f0f0f0;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 5px;
+}
+QLabel {
+    color: #f0f0f0;
+}
+QLineEdit, QSpinBox, QComboBox, QTextEdit {
+    background-color: #3c3c3c;
+    color: #f0f0f0;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 4px;
+}
+QComboBox::drop-down { border: none; }
+QComboBox QAbstractItemView {
+    background-color: #3c3c3c; color: #f0f0f0;
+    selection-background-color: #0078d4;
+}
+QCheckBox { color: #f0f0f0; }
+QPushButton {
+    background-color: #3c3c3c; color: #f0f0f0;
+    border: 1px solid #555; border-radius: 4px; padding: 6px 14px;
+}
+QPushButton:hover { background-color: #4c4c4c; border-color: #0078d4; }
+QPushButton:disabled { color: #666; }
+QProgressBar {
+    background-color: #3c3c3c; border: 1px solid #555;
+    border-radius: 4px; text-align: center; color: #f0f0f0;
+}
+QProgressBar::chunk { background-color: #0078d4; border-radius: 3px; }
+QTableWidget, QHeaderView {
+    background-color: #2b2b2b; color: #f0f0f0;
+    gridline-color: #555; border: 1px solid #555;
+}
+QHeaderView::section {
+    background-color: #3c3c3c; color: #f0f0f0;
+    border: 1px solid #555; padding: 4px;
+}
+QScrollArea { background-color: #2b2b2b; border: none; }
+QScrollBar:vertical {
+    background-color: #2b2b2b; width: 12px;
+}
+QScrollBar::handle:vertical {
+    background-color: #555; border-radius: 6px; min-height: 20px;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+"""
 
 
 # ---- 支持拖入文件夹的输入框 ----
@@ -183,7 +247,7 @@ class MainWindow(QMainWindow):
         # ======== 左侧导航栏 ========
         sidebar = QWidget()
         sidebar.setFixedWidth(120)
-        sidebar.setStyleSheet("background-color: #f5f5f5;")
+        sidebar.setProperty("sidebar", True)
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(8, 16, 8, 16)
         sidebar_layout.setSpacing(4)
@@ -403,14 +467,29 @@ class MainWindow(QMainWindow):
         settings_page = QWidget()
         settings_layout = QVBoxLayout(settings_page)
         settings_layout.setContentsMargins(12, 12, 12, 12)
-        placeholder = QLabel("设置功能开发中...")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder.setStyleSheet("color: #888; font-size: 14px;")
-        settings_layout.addWidget(placeholder)
+        settings_layout.setSpacing(8)
+
+        theme_group = QGroupBox("主题设置")
+        theme_layout = QVBoxLayout(theme_group)
+        self.dark_mode_cb = QCheckBox("深色模式")
+        self.dark_mode_cb.setChecked(self.settings.value("dark_mode", False, type=bool))
+        self.dark_mode_cb.toggled.connect(self._toggle_theme)
+        theme_layout.addWidget(self.dark_mode_cb)
+        settings_layout.addWidget(theme_group)
+
+        about_group = QGroupBox("关于")
+        about_layout = QVBoxLayout(about_group)
+        ver_label = QLabel("版本: v0.3.5")
+        about_layout.addWidget(ver_label)
+        self.github_btn = QPushButton("打开 GitHub 仓库")
+        self.github_btn.clicked.connect(self._open_github)
+        about_layout.addWidget(self.github_btn)
+        settings_layout.addWidget(about_group)
         settings_layout.addStretch()
         self.stack.addWidget(settings_page)
 
         self._switch_page(0)
+        self._toggle_theme()
 
         # ======== 信号连接 ========
         self.src_btn.clicked.connect(lambda: self._browse_folder(self.src_edit))
@@ -430,6 +509,15 @@ class MainWindow(QMainWindow):
         if index == 1:
             self._resize_ext_columns()
 
+    # ---- 明暗主题切换 ----
+    def _toggle_theme(self):
+        qss = DARK_QSS if self.dark_mode_cb.isChecked() else ""
+        QApplication.instance().setStyleSheet(qss)
+
+    # ---- 打开 GitHub 仓库 ----
+    def _open_github(self):
+        QDesktopServices.openUrl(QUrl("https://github.com/WindySumm/SortZip"))
+
     # ======== 私有辅助方法 ========
 
     # ---- 持久化：保存所有设置项 ----
@@ -444,6 +532,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("double_compress", self.double_cb.isChecked())
         self.settings.setValue("auto_close", self.auto_close_cb.isChecked())
         self.settings.setValue("skip_rename", self.no_rename_cb.isChecked())
+        self.settings.setValue("dark_mode", self.dark_mode_cb.isChecked())
         self._save_ext_state()
 
     # ---- 密码显示 / 隐藏切换 ----
@@ -780,7 +869,7 @@ class MainWindow(QMainWindow):
 
     # ---- 窗口关闭时保存映射状态 ----
     def closeEvent(self, event):
-        self._save_ext_state()
+        self._save_settings()
         super().closeEvent(event)
 
     # ---- 向日志面板追加文本 ----
