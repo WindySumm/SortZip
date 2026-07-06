@@ -244,6 +244,7 @@ class MainWindow(QMainWindow):
         self.naming_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         self.naming_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.naming_table.cellChanged.connect(self._on_naming_cell_changed)
+        self.naming_table.itemChanged.connect(self._on_naming_item_changed)
         rename_layout.addWidget(self.naming_table, 1)
 
         naming_btn_row = QHBoxLayout()
@@ -456,30 +457,41 @@ class MainWindow(QMainWindow):
         self._apply_naming_sync(saved)
 
     def _sync_naming_from_ext(self):
-        saved = {}
-        count = self.settings.beginReadArray("naming_rules")
-        for r in range(count):
-            self.settings.setArrayIndex(r)
-            folder = self.settings.value("match_folder", "")
-            if folder:
-                saved[folder] = {
-                    "enable": self.settings.value("enable", False, type=bool),
-                    "template": self.settings.value("template", ""),
-                }
-        self.settings.endArray()
-        self._apply_naming_sync(saved)
+        current = {}
+        for r in range(self.naming_table.rowCount()):
+            folder_item = self.naming_table.item(r, 1)
+            if not folder_item or not folder_item.text().strip():
+                continue
+            chk_item = self.naming_table.item(r, 0)
+            tmpl_item = self.naming_table.item(r, 2)
+            current[folder_item.text().strip()] = {
+                "enable": chk_item and chk_item.checkState() == Qt.CheckState.Checked,
+                "template": tmpl_item.text() if tmpl_item else "",
+            }
+        self._apply_naming_sync(current)
 
-    def _apply_naming_sync(self, saved):
+    def _apply_naming_sync(self, source):
         folders = set()
         for r in range(self.ext_table.rowCount()):
             name_item = self.ext_table.item(r, 2)
             if name_item and name_item.text().strip():
                 folders.add(name_item.text().strip())
+        for r in range(self.naming_table.rowCount() - 1, -1, -1):
+            folder_item = self.naming_table.item(r, 1)
+            if folder_item and folder_item.text().strip() not in folders:
+                self.naming_table.removeRow(r)
 
         self.naming_table.blockSignals(True)
-        self.naming_table.setRowCount(0)
+        existing = set()
+        for r in range(self.naming_table.rowCount()):
+            folder_item = self.naming_table.item(r, 1)
+            if folder_item and folder_item.text().strip():
+                existing.add(folder_item.text().strip())
+
         for folder in sorted(folders):
-            data = saved.get(folder, {})
+            if folder in existing:
+                continue
+            data = source.get(folder, {})
             enable = data.get("enable", True)
             template = data.get("template", "{n}{ext}")
             self._add_naming_row(folder, template, enable=enable)
@@ -628,6 +640,10 @@ class MainWindow(QMainWindow):
         for r in sorted(rows, reverse=True):
             self.naming_table.removeRow(r)
         self._refresh_preview()
+
+    def _on_naming_item_changed(self, item):
+        if item.column() == 0:
+            self._refresh_preview()
 
     def _on_naming_cell_changed(self, row, col):
         if col in (1, 2):
