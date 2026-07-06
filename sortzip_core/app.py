@@ -907,6 +907,7 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(True)
         self.progress_bar.setValue(0)
         self.log_text.clear()
+        self._last_dest_path = config.get('dest', '')
 
         self.thread = QThread()
         self.worker = Worker(config)
@@ -941,7 +942,8 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(100)
         self.progress_bar.setFormat("完成  [100%]")
         stats = self.worker.stats if self.worker else {}
-        show_stats_dialog(self, stats)
+        dest_path = getattr(self, '_last_dest_path', '')
+        show_stats_dialog(self, stats, dest_path=dest_path)
 
     @Slot(str)
     def _append_log(self, text):

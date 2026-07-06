@@ -42,10 +42,10 @@ def show_styled_dialog(parent, title, message, width=300, height=160):
     dlg.exec()
 
 
-def show_stats_dialog(parent, stats):
+def show_stats_dialog(parent, stats, dest_path=None):
     dlg = QDialog(parent)
     dlg.setWindowTitle("统计报告")
-    dlg.setFixedSize(280, 180)
+    dlg.setFixedSize(280, 200)
     layout = QVBoxLayout(dlg)
     layout.setSpacing(10)
     title = QLabel("处理成功完成")
@@ -66,9 +66,15 @@ def show_stats_dialog(parent, stats):
         row.addStretch()
         layout.addLayout(row)
     layout.addStretch()
-    btn = QPushButton("确定")
-    btn.clicked.connect(dlg.accept)
-    layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
+    btn_layout = QHBoxLayout()
+    if dest_path:
+        open_btn = QPushButton("打开目标文件夹")
+        open_btn.clicked.connect(lambda: os.startfile(dest_path))
+        btn_layout.addWidget(open_btn)
+    ok_btn = QPushButton("确定")
+    ok_btn.clicked.connect(dlg.accept)
+    btn_layout.addWidget(ok_btn)
+    layout.addLayout(btn_layout)
     dlg.exec()
 
 

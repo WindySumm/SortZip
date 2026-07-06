@@ -147,33 +147,25 @@ def get_auto_volume(total_size_bytes):
 def group_compress(dest_root, group_size, password, volume_size=None,
                    bandizip_path='bandizip', keep_files=False, double_compress=True,
                    auto_close=True, on_progress=None, cancel_check=None,
-                   skip_rename=False, sort_by='name', archive_suffix='.zipp'):
+                   sort_by='name', archive_suffix='.zipp'):
     dest_root = Path(dest_root)
     folders = [f for f in dest_root.iterdir() if f.is_dir()]
     all_groups = []
     for folder in folders:
         files = [f for f in folder.iterdir() if f.is_file()]
         files = [f for f in files if f.suffix.lower() != '.zip']
-        if not skip_rename:
-            files = [f for f in files if f.stem.isdigit()]
-            files.sort(key=lambda f: int(f.stem))
+        if sort_by == 'mtime':
+            files.sort(key=lambda f: f.stat().st_mtime)
         else:
-            if sort_by == 'mtime':
-                files.sort(key=lambda f: f.stat().st_mtime)
-            else:
-                files.sort(key=lambda f: f.name)
+            files.sort(key=lambda f: f.name)
         for i in range(0, len(files), group_size):
             all_groups.append((folder, files[i:i+group_size], i))
     total = len(all_groups)
     for idx, (folder, group, start_i) in enumerate(all_groups, start=1):
         if _check_cancel(cancel_check):
             return
-        if skip_rename:
-            start_num = start_i + 1
-            end_num = start_i + len(group)
-        else:
-            start_num = int(group[0].stem)
-            end_num = int(group[-1].stem)
+        start_num = start_i + 1
+        end_num = start_i + len(group)
         if start_num == end_num:
             base_name = f"{start_num}"
         else:
@@ -286,9 +278,8 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
     print("重命名完成。")
     if _check_cancel(cancel_check):
         return
-    has_rename_rules = naming_rules and any(
-        r.get('template', '').strip() for r in naming_rules if r.get('enable', True)
-    )
+    if _check_cancel(cancel_check):
+        return
     print("开始分组压缩...")
     group_compress(
         dest_root=dest,
@@ -301,7 +292,6 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
         auto_close=config.get('auto_close', True),
         on_progress=lambda c, t, m: on_progress(40, 100, c, t, m) if on_progress else None,
         cancel_check=cancel_check,
-        skip_rename=not has_rename_rules,
         sort_by=config.get('sort_by', 'name'),
         archive_suffix=config.get('archive_suffix', '.zipp'),
     )
