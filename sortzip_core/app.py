@@ -287,17 +287,12 @@ class MainWindow(QMainWindow):
         self.archive_rename_cb.setChecked(self.settings.value("archive_rename_enable", False, type=bool))
         suffix_row = QHBoxLayout()
         suffix_row.addWidget(self.archive_rename_cb)
-        suffix_row.addWidget(QLabel("格式:"))
-        self.archive_format_combo = QComboBox()
-        self.archive_format_combo.addItems([".zip", ".rar", ".7z", ".tar.gz", ".zipp"])
-        saved_suffix = self.settings.value("archive_suffix", ".zipp")
-        idx = self.archive_format_combo.findText(saved_suffix)
-        self.archive_format_combo.setCurrentIndex(idx if idx >= 0 else 4)
-        self.archive_format_combo.currentTextChanged.connect(self._on_archive_format_changed)
-        suffix_row.addWidget(self.archive_format_combo)
+        suffix_row.addSpacing(10)
         suffix_row.addWidget(QLabel("替换为:"))
-        self.archive_suffix_edit = QLineEdit(saved_suffix)
-        self.archive_suffix_edit.setPlaceholderText(".zipp")
+        self.archive_suffix_edit = QLineEdit(
+            self.settings.value("archive_suffix", f".{self.settings.value('archive_format', 'zip')}")
+        )
+        self.archive_suffix_edit.setPlaceholderText(".zip")
         suffix_row.addWidget(self.archive_suffix_edit)
         suffix_row.addStretch()
         compress_rename_layout.addLayout(suffix_row)
@@ -315,7 +310,8 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
 
         opt_group = QGroupBox("选项")
-        opt_layout = QHBoxLayout(opt_group)
+        opt_layout = QVBoxLayout(opt_group)
+        opt_check_row = QHBoxLayout()
 
         self.keep_cb = QCheckBox("保留原始文件")
         self.keep_cb.setChecked(self.settings.value("keep_files", False, type=bool))
@@ -324,10 +320,25 @@ class MainWindow(QMainWindow):
         self.auto_close_cb = QCheckBox("自动关闭 Bandizip 窗口")
         self.auto_close_cb.setChecked(self.settings.value("auto_close", True, type=bool))
 
-        opt_layout.addWidget(self.keep_cb)
-        opt_layout.addWidget(self.double_cb)
-        opt_layout.addWidget(self.auto_close_cb)
-        opt_layout.addStretch()
+        opt_check_row.addWidget(self.keep_cb)
+        opt_check_row.addWidget(self.double_cb)
+        opt_check_row.addWidget(self.auto_close_cb)
+        opt_check_row.addStretch()
+        opt_layout.addLayout(opt_check_row)
+
+        fmt_row = QHBoxLayout()
+        fmt_row.addWidget(QLabel("压缩格式:"))
+        self.compress_format_combo = QComboBox()
+        self.compress_format_combo.addItems(
+            ["zip", "7z", "rar", "tar", "gz", "bz2", "xz", "lzh", "alz", "egg"]
+        )
+        saved_fmt = self.settings.value("archive_format", "zip")
+        idx = self.compress_format_combo.findText(saved_fmt)
+        self.compress_format_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.compress_format_combo.currentTextChanged.connect(self._on_compress_format_changed)
+        fmt_row.addWidget(self.compress_format_combo)
+        fmt_row.addStretch()
+        opt_layout.addLayout(fmt_row)
 
         layout.addWidget(opt_group)
 
@@ -424,6 +435,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("dark_mode", self.dark_mode_cb.isChecked())
         self.settings.setValue("archive_rename_enable", self.archive_rename_cb.isChecked())
         self.settings.setValue("archive_suffix", self.archive_suffix_edit.text())
+        self.settings.setValue("archive_format", self.compress_format_combo.currentText())
         self._save_ext_state()
         self._save_naming_state()
 
@@ -520,7 +532,7 @@ class MainWindow(QMainWindow):
             if folder in existing:
                 continue
             data = source.get(folder, {})
-            enable = data.get("enable", True)
+            enable = data.get("enable", False)
             template = data.get("template", "{n}{ext}")
             self._add_naming_row(folder, template, enable=enable)
         self.naming_table.blockSignals(False)
@@ -695,8 +707,10 @@ class MainWindow(QMainWindow):
         if index >= 0:
             self._refresh_preview()
 
-    def _on_archive_format_changed(self, text):
-        self.archive_suffix_edit.setText(text)
+    def _on_compress_format_changed(self, text):
+        suffix = f".{text}"
+        self.archive_suffix_edit.setText(suffix)
+        self.archive_suffix_edit.setPlaceholderText(suffix)
 
     def _match_naming_rule(self, rules, folder_name):
         if not rules:
@@ -735,7 +749,8 @@ class MainWindow(QMainWindow):
         current_folder = self.preview_tab_bar.tabText(current_tab) if current_tab >= 0 else ""
 
         self.preview_tab_bar.blockSignals(True)
-        self.preview_tab_bar.clear()
+        while self.preview_tab_bar.count() > 0:
+            self.preview_tab_bar.removeTab(0)
         folders = sorted(folder_files)
         for folder in folders:
             self.preview_tab_bar.addTab(folder)
@@ -803,6 +818,7 @@ class MainWindow(QMainWindow):
             'auto_close': self.auto_close_cb.isChecked(),
             'naming_rules': self._collect_naming_rules(),
             'archive_suffix': self.archive_suffix_edit.text().strip() if self.archive_rename_cb.isChecked() else '.zipp',
+            'archive_format': self.compress_format_combo.currentText(),
         }
 
     def _run(self):
