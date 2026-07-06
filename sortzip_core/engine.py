@@ -1,4 +1,3 @@
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -148,7 +147,7 @@ def get_auto_volume(total_size_bytes):
 def group_compress(dest_root, group_size, password, volume_size=None,
                    bandizip_path='bandizip', keep_files=False, double_compress=True,
                    auto_close=True, on_progress=None, cancel_check=None,
-                   skip_rename=False, sort_by='name'):
+                   skip_rename=False, sort_by='name', archive_suffix='.zipp'):
     dest_root = Path(dest_root)
     folders = [f for f in dest_root.iterdir() if f.is_dir()]
     all_groups = []
@@ -225,7 +224,7 @@ def group_compress(dest_root, group_size, password, volume_size=None,
                 continue
             temp_zip_name = f"最终压缩{base_name}.zip"
             temp_zip_path = folder / temp_zip_name
-            final_zip_name = f"{base_name}.zipp"
+            final_zip_name = f"{base_name}{archive_suffix}"
             final_zip_path = folder / final_zip_name
             cmd2 = [bandizip_path, 'a']
             if password:
@@ -304,6 +303,7 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
         cancel_check=cancel_check,
         skip_rename=not has_rename_rules,
         sort_by=config.get('sort_by', 'name'),
+        archive_suffix=config.get('archive_suffix', '.zipp'),
     )
     print("所有任务完成！")
 

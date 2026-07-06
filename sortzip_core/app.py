@@ -268,14 +268,29 @@ class MainWindow(QMainWindow):
 
         preview_group = QGroupBox("效果预览")
         preview_layout = QVBoxLayout(preview_group)
-        self.preview_table = QTableWidget(5, 2)
-        self.preview_table.setHorizontalHeaderLabels(["命名前", "命名后"])
-        self.preview_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.preview_table = QTableWidget(0, 3)
+        self.preview_table.setHorizontalHeaderLabels(["文件夹", "命名前", "命名后"])
+        self.preview_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         self.preview_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.preview_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.preview_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.preview_table.setMinimumHeight(160)
         preview_layout.addWidget(self.preview_table)
         layout.addWidget(preview_group)
+
+        compress_rename_group = QGroupBox("压缩后重命名")
+        compress_rename_layout = QVBoxLayout(compress_rename_group)
+        self.archive_rename_cb = QCheckBox("启用后缀名替换")
+        self.archive_rename_cb.setChecked(self.settings.value("archive_rename_enable", False, type=bool))
+        suffix_row = QHBoxLayout()
+        suffix_row.addWidget(self.archive_rename_cb)
+        suffix_row.addWidget(QLabel("替换为:"))
+        self.archive_suffix_edit = QLineEdit(self.settings.value("archive_suffix", ".zipp"))
+        self.archive_suffix_edit.setPlaceholderText(".zipp")
+        suffix_row.addWidget(self.archive_suffix_edit)
+        suffix_row.addStretch()
+        compress_rename_layout.addLayout(suffix_row)
+        layout.addWidget(compress_rename_group)
 
         self._load_naming_state()
         self._refresh_preview()
@@ -293,7 +308,7 @@ class MainWindow(QMainWindow):
 
         self.keep_cb = QCheckBox("保留原始文件")
         self.keep_cb.setChecked(self.settings.value("keep_files", False, type=bool))
-        self.double_cb = QCheckBox("二次打包 ( .zipp )")
+        self.double_cb = QCheckBox("二次压缩")
         self.double_cb.setChecked(self.settings.value("double_compress", True, type=bool))
         self.auto_close_cb = QCheckBox("自动关闭 Bandizip 窗口")
         self.auto_close_cb.setChecked(self.settings.value("auto_close", True, type=bool))
@@ -396,6 +411,8 @@ class MainWindow(QMainWindow):
         self.settings.setValue("double_compress", self.double_cb.isChecked())
         self.settings.setValue("auto_close", self.auto_close_cb.isChecked())
         self.settings.setValue("dark_mode", self.dark_mode_cb.isChecked())
+        self.settings.setValue("archive_rename_enable", self.archive_rename_cb.isChecked())
+        self.settings.setValue("archive_suffix", self.archive_suffix_edit.text())
         self._save_ext_state()
         self._save_naming_state()
 
@@ -685,46 +702,34 @@ class MainWindow(QMainWindow):
                     and ext_item and ext_item.text().strip()):
                 ext_to_folder[ext_item.text().strip()] = name_item.text().strip() if name_item else ""
 
-        for row in range(5):
-            self.preview_table.blockSignals(True)
-            for col in (0, 1):
-                item = self.preview_table.item(row, col)
-                if not item:
-                    item = QTableWidgetItem("")
-                    self.preview_table.setItem(row, col, item)
-            self.preview_table.blockSignals(False)
-            self.preview_table.item(row, 0).setText("")
-            self.preview_table.item(row, 1).setText("")
-
-        sample_files = []
-        for ext, folder in ext_to_folder.items():
-            candidates = []
-            if src_path and os.path.isdir(src_path):
-                try:
-                    for f in Path(src_path).iterdir():
-                        if f.is_file() and f.suffix.lower() == ext:
-                            candidates.append(f.name)
-                except Exception:
-                    pass
-            if not candidates:
-                candidates = [f"file{i+1}{ext}" for i in range(3)]
-            sample_files.extend([(f, ext, folder) for f in candidates[:5]])
+        folder_files = {}
+        if src_path and os.path.isdir(src_path):
+            try:
+                for f in Path(src_path).iterdir():
+                    if f.is_file():
+                        folder = ext_to_folder.get(f.suffix.lower())
+                        if folder:
+                            folder_files.setdefault(folder, []).append(f.name)
+            except Exception:
+                pass
 
         naming_rules = self._collect_naming_rules()
+        self.preview_table.setRowCount(0)
 
-        for i, (fname, ext, folder) in enumerate(sample_files[:5]):
-            before_item = self.preview_table.item(i, 0)
-            after_item = self.preview_table.item(i, 1)
-            if before_item:
-                before_item.setText(fname)
-            if after_item:
-                rule = self._match_naming_rule(naming_rules, folder)
+        for folder in sorted(folder_files):
+            files = folder_files[folder]
+            rule = self._match_naming_rule(naming_rules, folder)
+            for i, fname in enumerate(files):
+                row = self.preview_table.rowCount()
+                self.preview_table.insertRow(row)
+                self.preview_table.setItem(row, 0, QTableWidgetItem(folder))
+                self.preview_table.setItem(row, 1, QTableWidgetItem(fname))
                 if rule:
-                    new_name = render_template(rule.get('template', ''), i + 1, ext,
-                                               folder, Path(fname).stem)
-                    after_item.setText(new_name if new_name else fname)
+                    new_name = render_template(rule.get('template', ''), i + 1,
+                                               Path(fname).suffix, folder, Path(fname).stem)
+                    self.preview_table.setItem(row, 2, QTableWidgetItem(new_name if new_name else fname))
                 else:
-                    after_item.setText(fname)
+                    self.preview_table.setItem(row, 2, QTableWidgetItem(fname))
 
     def _collect_naming_rules(self):
         rules = []
@@ -768,6 +773,7 @@ class MainWindow(QMainWindow):
             'double_compress': self.double_cb.isChecked(),
             'auto_close': self.auto_close_cb.isChecked(),
             'naming_rules': self._collect_naming_rules(),
+            'archive_suffix': self.archive_suffix_edit.text().strip() if self.archive_rename_cb.isChecked() else '.zipp',
         }
 
     def _run(self):
