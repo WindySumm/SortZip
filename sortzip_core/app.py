@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QFormLayout, QLineEdit, QSpinBox, QComboBox,
     QCheckBox, QPushButton, QProgressBar, QTextEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QLabel, QFileDialog, QScrollArea, QGridLayout,
-    QStackedWidget,
+    QStackedWidget, QTabBar,
 )
 from PySide6.QtCore import Qt, QThread, Slot, QSettings, QUrl
 from PySide6.QtGui import QIcon, QTextCursor, QDesktopServices
@@ -268,11 +268,14 @@ class MainWindow(QMainWindow):
 
         preview_group = QGroupBox("效果预览")
         preview_layout = QVBoxLayout(preview_group)
-        self.preview_table = QTableWidget(0, 3)
-        self.preview_table.setHorizontalHeaderLabels(["文件夹", "命名前", "命名后"])
-        self.preview_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        self.preview_tab_bar = QTabBar()
+        self.preview_tab_bar.setExpanding(False)
+        self.preview_tab_bar.currentChanged.connect(self._on_preview_tab_changed)
+        preview_layout.addWidget(self.preview_tab_bar)
+        self.preview_table = QTableWidget(0, 2)
+        self.preview_table.setHorizontalHeaderLabels(["命名前", "命名后"])
+        self.preview_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.preview_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.preview_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.preview_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.preview_table.setMinimumHeight(160)
         preview_layout.addWidget(self.preview_table)
@@ -284,8 +287,16 @@ class MainWindow(QMainWindow):
         self.archive_rename_cb.setChecked(self.settings.value("archive_rename_enable", False, type=bool))
         suffix_row = QHBoxLayout()
         suffix_row.addWidget(self.archive_rename_cb)
+        suffix_row.addWidget(QLabel("格式:"))
+        self.archive_format_combo = QComboBox()
+        self.archive_format_combo.addItems([".zip", ".rar", ".7z", ".tar.gz", ".zipp"])
+        saved_suffix = self.settings.value("archive_suffix", ".zipp")
+        idx = self.archive_format_combo.findText(saved_suffix)
+        self.archive_format_combo.setCurrentIndex(idx if idx >= 0 else 4)
+        self.archive_format_combo.currentTextChanged.connect(self._on_archive_format_changed)
+        suffix_row.addWidget(self.archive_format_combo)
         suffix_row.addWidget(QLabel("替换为:"))
-        self.archive_suffix_edit = QLineEdit(self.settings.value("archive_suffix", ".zipp"))
+        self.archive_suffix_edit = QLineEdit(saved_suffix)
         self.archive_suffix_edit.setPlaceholderText(".zipp")
         suffix_row.addWidget(self.archive_suffix_edit)
         suffix_row.addStretch()
@@ -680,6 +691,13 @@ class MainWindow(QMainWindow):
                 self._refresh_preview()
         self.naming_preset_combo.setCurrentIndex(-1)
 
+    def _on_preview_tab_changed(self, index):
+        if index >= 0:
+            self._refresh_preview()
+
+    def _on_archive_format_changed(self, text):
+        self.archive_suffix_edit.setText(text)
+
     def _match_naming_rule(self, rules, folder_name):
         if not rules:
             return None
@@ -713,23 +731,34 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+        current_tab = self.preview_tab_bar.currentIndex()
+        current_folder = self.preview_tab_bar.tabText(current_tab) if current_tab >= 0 else ""
+
+        self.preview_tab_bar.blockSignals(True)
+        self.preview_tab_bar.clear()
+        folders = sorted(folder_files)
+        for folder in folders:
+            self.preview_tab_bar.addTab(folder)
+        select_idx = folders.index(current_folder) if current_folder in folders else 0
+        if folders:
+            self.preview_tab_bar.setCurrentIndex(select_idx)
+        self.preview_tab_bar.blockSignals(False)
+
         naming_rules = self._collect_naming_rules()
         self.preview_table.setRowCount(0)
-
-        for folder in sorted(folder_files):
-            files = folder_files[folder]
-            rule = self._match_naming_rule(naming_rules, folder)
-            for i, fname in enumerate(files):
+        selected = self.preview_tab_bar.tabText(self.preview_tab_bar.currentIndex()) if self.preview_tab_bar.count() > 0 else ""
+        if selected and selected in folder_files:
+            rule = self._match_naming_rule(naming_rules, selected)
+            for i, fname in enumerate(folder_files[selected]):
                 row = self.preview_table.rowCount()
                 self.preview_table.insertRow(row)
-                self.preview_table.setItem(row, 0, QTableWidgetItem(folder))
-                self.preview_table.setItem(row, 1, QTableWidgetItem(fname))
+                self.preview_table.setItem(row, 0, QTableWidgetItem(fname))
                 if rule:
                     new_name = render_template(rule.get('template', ''), i + 1,
-                                               Path(fname).suffix, folder, Path(fname).stem)
-                    self.preview_table.setItem(row, 2, QTableWidgetItem(new_name if new_name else fname))
+                                               Path(fname).suffix, selected, Path(fname).stem)
+                    self.preview_table.setItem(row, 1, QTableWidgetItem(new_name if new_name else fname))
                 else:
-                    self.preview_table.setItem(row, 2, QTableWidgetItem(fname))
+                    self.preview_table.setItem(row, 1, QTableWidgetItem(fname))
 
     def _collect_naming_rules(self):
         rules = []
