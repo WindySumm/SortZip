@@ -3,11 +3,13 @@ import sys
 
 from PySide6.QtWidgets import (
     QLineEdit, QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
+    QTextBrowser,
 )
 from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 
 from sortzip_core.engine import main_from_config
+from sortzip_core.manual_content import MANUAL_TEXT
 
 
 def resource_path(relative_path):
@@ -68,6 +70,30 @@ def show_stats_dialog(parent, stats):
     btn.clicked.connect(dlg.accept)
     layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
     dlg.exec()
+
+
+def show_manual_dialog(parent):
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("使用手册")
+    dlg.resize(520, 460)
+    layout = QVBoxLayout(dlg)
+    browser = QTextBrowser()
+    browser.setOpenExternalLinks(False)
+    browser.setHtml(MANUAL_TEXT)
+    layout.addWidget(browser)
+    btn = QPushButton("关闭")
+    btn.clicked.connect(dlg.accept)
+    layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
+    dlg.exec()
+
+
+def show_conflict_dialog(parent, folder_name, template, conflicts):
+    lines = "\n".join(f"  · {orig} → {name}" for _, orig, name in conflicts)
+    msg = (f"文件夹「{folder_name}」中\n"
+           f"模板 \"{template}\" 产生以下命名冲突：\n\n"
+           f"{lines}\n\n"
+           f"请调整命名模板")
+    show_styled_dialog(parent, "命名冲突", msg, width=380, height=220)
 
 
 class DropLineEdit(QLineEdit):

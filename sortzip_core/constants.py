@@ -49,6 +49,14 @@ def validate_win_folder_name(name):
     return None
 
 
+# ---- 命名模板预设 ----
+RENAME_PRESETS = [
+    ("{n}{ext}",              "纯序号 (默认)"),
+    ("{folder}_{n}{ext}",     "文件夹_序号"),
+    ("{original}{ext}",       "保留原文件名"),
+    ("{original}_{n}{ext}",   "原文件名_序号"),
+]
+
 # ---- 暗色主题样式表 ----
 DARK_QSS = """
 QMainWindow, QDialog {

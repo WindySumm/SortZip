@@ -39,7 +39,42 @@ def classify_files(src_dir, dest_root, custom_names=None, on_progress=None, canc
             on_progress(idx, total, f"分类: {file_path.name}")
 
 
-def rename_files_in_folders(dest_root, sort_by='name', on_progress=None, cancel_check=None):
+def render_template(template, idx, ext, folder_name, original_name):
+    if not template:
+        return None
+    return template.replace('{n}', str(idx)) \
+                   .replace('{ext}', ext) \
+                   .replace('{folder}', folder_name) \
+                   .replace('{original}', original_name)
+
+
+def _match_rule(naming_rules, folder_name):
+    if not naming_rules:
+        return None
+    for rule in naming_rules:
+        if not rule.get('enable', True):
+            continue
+        match = rule.get('match_folder', '')
+        if match == '*' or match == folder_name:
+            return rule
+    return None
+
+
+def check_naming_conflicts(folder_name, files, template):
+    conflicts = []
+    seen = {}
+    for idx, file_path in enumerate(files, start=1):
+        new_name = render_template(template, idx, file_path.suffix,
+                                   folder_name, file_path.stem)
+        if new_name in seen:
+            conflicts.append((seen[new_name], file_path.name, new_name))
+        else:
+            seen[new_name] = file_path.name
+    return conflicts
+
+
+def rename_files_in_folders(dest_root, sort_by='name', on_progress=None, cancel_check=None,
+                            naming_rules=None):
     dest_root = Path(dest_root)
     folders = [f for f in dest_root.iterdir() if f.is_dir()]
     done = 0
@@ -52,13 +87,22 @@ def rename_files_in_folders(dest_root, sort_by='name', on_progress=None, cancel_
         files = [f for f in folder.iterdir() if f.is_file()]
         if not files:
             continue
+        rule = _match_rule(naming_rules, folder.name)
+        template = rule.get('template', '') if rule else ''
+        if not template:
+            print(f"跳过重命名（模板为空）: {folder.name}")
+            done += len(files)
+            continue
         if sort_by == 'mtime':
             files.sort(key=lambda f: f.stat().st_mtime)
         else:
             files.sort(key=lambda f: f.name)
         rename_map = {}
         for idx, file_path in enumerate(files, start=1):
-            new_name = f"{idx}{file_path.suffix}"
+            new_name = render_template(template, idx, file_path.suffix,
+                                       folder.name, file_path.stem)
+            if not new_name:
+                continue
             new_path = folder / new_name
             rename_map[file_path] = new_path
         for src, dst in rename_map.items():
@@ -224,7 +268,7 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
     src = config['src']
     dest = config['dest']
     custom_names = config.get('custom_names', {})
-    skip_rename = config.get('skip_rename', False)
+    naming_rules = config.get('naming_rules', None)
     if _check_cancel(cancel_check):
         return
     print("开始文件分类...")
@@ -235,16 +279,17 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
     print("分类完成。")
     if _check_cancel(cancel_check):
         return
-    if not skip_rename:
-        print("开始重命名...")
-        rename_files_in_folders(dest, config['sort_by'],
-                                on_progress=lambda c, t, m: on_progress(30, 40, c, t, m) if on_progress else None,
-                                cancel_check=cancel_check)
-        print("重命名完成。")
-    else:
-        print("跳过重命名（已关闭）。")
+    print("开始重命名...")
+    rename_files_in_folders(dest, config['sort_by'],
+                            on_progress=lambda c, t, m: on_progress(30, 40, c, t, m) if on_progress else None,
+                            cancel_check=cancel_check,
+                            naming_rules=naming_rules)
+    print("重命名完成。")
     if _check_cancel(cancel_check):
         return
+    has_rename_rules = naming_rules and any(
+        r.get('template', '').strip() for r in naming_rules if r.get('enable', True)
+    )
     print("开始分组压缩...")
     group_compress(
         dest_root=dest,
@@ -257,7 +302,7 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
         auto_close=config.get('auto_close', True),
         on_progress=lambda c, t, m: on_progress(40, 100, c, t, m) if on_progress else None,
         cancel_check=cancel_check,
-        skip_rename=skip_rename,
+        skip_rename=not has_rename_rules,
         sort_by=config.get('sort_by', 'name'),
     )
     print("所有任务完成！")

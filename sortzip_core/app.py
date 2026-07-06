@@ -12,9 +12,11 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThread, Slot, QSettings, QUrl
 from PySide6.QtGui import QIcon, QTextCursor, QDesktopServices
 
-from sortzip_core.constants import EXT_CATEGORIES, DARK_QSS, validate_win_folder_name
+from sortzip_core.constants import EXT_CATEGORIES, DARK_QSS, RENAME_PRESETS, validate_win_folder_name
+from sortzip_core.engine import check_naming_conflicts, render_template
 from sortzip_core.widgets import (
     resource_path, show_styled_dialog, show_stats_dialog,
+    show_manual_dialog, show_conflict_dialog,
     DropLineEdit, Worker,
 )
 
@@ -47,7 +49,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.setSpacing(4)
 
         self.sidebar_btns = []
-        for i, text in enumerate(["文件", "映射", "开始", "设置"]):
+        for i, text in enumerate(["文件", "映射", "命名", "开始", "设置"]):
             btn = QPushButton(text)
             btn.setFixedHeight(40)
             btn.setProperty("active", "false")
@@ -85,6 +87,7 @@ class MainWindow(QMainWindow):
 
         self._build_file_page()
         self._build_map_page()
+        self._build_naming_page()
         self._build_start_page()
         self._build_settings_page()
 
@@ -96,6 +99,8 @@ class MainWindow(QMainWindow):
         self.dest_btn.clicked.connect(lambda: self._browse_folder(self.dest_edit))
         self.ext_add_btn.clicked.connect(lambda: self._add_ext_row("", ""))
         self.ext_del_btn.clicked.connect(self._del_ext_row)
+        self.naming_add_btn.clicked.connect(lambda: self._add_naming_row("", ""))
+        self.naming_del_btn.clicked.connect(self._del_naming_row)
         self.run_btn.clicked.connect(self._run)
         self.cancel_btn.clicked.connect(self._cancel)
 
@@ -159,10 +164,6 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(basic_group)
 
-        self.no_rename_cb = QCheckBox("不进行重命名（保留原文件名）")
-        self.no_rename_cb.setChecked(self.settings.value("skip_rename", False, type=bool))
-        layout.addWidget(self.no_rename_cb)
-
         layout.addStretch()
         self.stack.addWidget(page)
 
@@ -224,6 +225,59 @@ class MainWindow(QMainWindow):
         layout.addWidget(scroll, 1)
 
         self._load_ext_state()
+
+        self.stack.addWidget(page)
+
+    def _build_naming_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        rename_group = QGroupBox("分类后重命名")
+        rename_layout = QVBoxLayout(rename_group)
+
+        self.naming_table = QTableWidget(0, 3)
+        self.naming_table.setHorizontalHeaderLabels(["启用", "匹配文件夹", "命名模板"])
+        self.naming_table.setMinimumHeight(120)
+        self.naming_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.naming_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        self.naming_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.naming_table.cellChanged.connect(self._on_naming_cell_changed)
+        rename_layout.addWidget(self.naming_table, 1)
+
+        naming_btn_row = QHBoxLayout()
+        self.naming_add_btn = QPushButton("添加")
+        self.naming_del_btn = QPushButton("删除选中")
+        naming_btn_row.addWidget(self.naming_add_btn)
+        naming_btn_row.addWidget(self.naming_del_btn)
+        naming_btn_row.addStretch()
+
+        naming_btn_row.addWidget(QLabel("预设:"))
+        self.naming_preset_combo = QComboBox()
+        self.naming_preset_combo.addItems(
+            [f"{label}  ({tmpl})" for tmpl, label in RENAME_PRESETS]
+        )
+        self.naming_preset_combo.setCurrentIndex(-1)
+        self.naming_preset_combo.currentIndexChanged.connect(self._on_naming_preset_selected)
+        naming_btn_row.addWidget(self.naming_preset_combo)
+
+        rename_layout.addLayout(naming_btn_row)
+        layout.addWidget(rename_group)
+
+        preview_group = QGroupBox("效果预览")
+        preview_layout = QVBoxLayout(preview_group)
+        self.preview_table = QTableWidget(5, 2)
+        self.preview_table.setHorizontalHeaderLabels(["命名前", "命名后"])
+        self.preview_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.preview_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.preview_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.preview_table.setMinimumHeight(160)
+        preview_layout.addWidget(self.preview_table)
+        layout.addWidget(preview_group)
+
+        self._load_naming_state()
+        self._refresh_preview()
 
         self.stack.addWidget(page)
 
@@ -290,9 +344,16 @@ class MainWindow(QMainWindow):
         theme_layout.addWidget(self.dark_mode_cb)
         layout.addWidget(theme_group)
 
+        manual_group = QGroupBox("使用手册")
+        manual_layout = QVBoxLayout(manual_group)
+        self.manual_btn = QPushButton("打开使用手册")
+        self.manual_btn.clicked.connect(lambda: show_manual_dialog(self))
+        manual_layout.addWidget(self.manual_btn)
+        layout.addWidget(manual_group)
+
         about_group = QGroupBox("关于")
         about_layout = QVBoxLayout(about_group)
-        ver_label = QLabel("版本: v0.3.5")
+        ver_label = QLabel("版本: v0.5.0")
         about_layout.addWidget(ver_label)
         self.github_btn = QPushButton("打开 GitHub 仓库")
         self.github_btn.clicked.connect(self._open_github)
@@ -331,9 +392,9 @@ class MainWindow(QMainWindow):
         self.settings.setValue("keep_files", self.keep_cb.isChecked())
         self.settings.setValue("double_compress", self.double_cb.isChecked())
         self.settings.setValue("auto_close", self.auto_close_cb.isChecked())
-        self.settings.setValue("skip_rename", self.no_rename_cb.isChecked())
         self.settings.setValue("dark_mode", self.dark_mode_cb.isChecked())
         self._save_ext_state()
+        self._save_naming_state()
 
     def _save_ext_state(self):
         self.settings.beginWriteArray("ext_mappings")
@@ -361,6 +422,29 @@ class MainWindow(QMainWindow):
                 self._add_ext_row(ext, name, checked=checked)
         self.settings.endArray()
         self._sync_pickers_from_table()
+
+    def _save_naming_state(self):
+        self.settings.beginWriteArray("naming_rules")
+        for r in range(self.naming_table.rowCount()):
+            self.settings.setArrayIndex(r)
+            chk_item = self.naming_table.item(r, 0)
+            folder_item = self.naming_table.item(r, 1)
+            tmpl_item = self.naming_table.item(r, 2)
+            self.settings.setValue("enable", chk_item.checkState() == Qt.CheckState.Checked)
+            self.settings.setValue("match_folder", folder_item.text() if folder_item else "")
+            self.settings.setValue("template", tmpl_item.text() if tmpl_item else "")
+        self.settings.endArray()
+
+    def _load_naming_state(self):
+        count = self.settings.beginReadArray("naming_rules")
+        for r in range(count):
+            self.settings.setArrayIndex(r)
+            enable = self.settings.value("enable", False, type=bool)
+            folder = self.settings.value("match_folder", "")
+            tmpl = self.settings.value("template", "")
+            if folder:
+                self._add_naming_row(folder, tmpl, enable=enable)
+        self.settings.endArray()
 
     # ==================== 辅助方法 ====================
 
@@ -487,6 +571,120 @@ class MainWindow(QMainWindow):
                     self._ext_pickers[ext].setChecked(True)
                     self._ext_pickers[ext].blockSignals(False)
 
+    # ==================== 命名规则 ====================
+
+    def _add_naming_row(self, match_folder, template, enable=True):
+        row = self.naming_table.rowCount()
+        self.naming_table.insertRow(row)
+        chk = QTableWidgetItem()
+        chk.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+        chk.setCheckState(Qt.CheckState.Checked if enable else Qt.CheckState.Unchecked)
+        self.naming_table.setItem(row, 0, chk)
+        self.naming_table.setItem(row, 1, QTableWidgetItem(match_folder))
+        self.naming_table.setItem(row, 2, QTableWidgetItem(template))
+
+    def _del_naming_row(self):
+        rows = set(i.row() for i in self.naming_table.selectedIndexes())
+        for r in sorted(rows, reverse=True):
+            self.naming_table.removeRow(r)
+        self._refresh_preview()
+
+    def _on_naming_cell_changed(self, row, col):
+        if col in (1, 2):
+            self._refresh_preview()
+
+    def _on_naming_preset_selected(self, idx):
+        if idx < 0:
+            return
+        tmpl, _ = RENAME_PRESETS[idx]
+        row = self.naming_table.currentRow()
+        if row >= 0:
+            item = self.naming_table.item(row, 2)
+            if item:
+                self.naming_table.blockSignals(True)
+                item.setText(tmpl)
+                self.naming_table.blockSignals(False)
+                self._refresh_preview()
+        self.naming_preset_combo.setCurrentIndex(-1)
+
+    def _match_naming_rule(self, rules, folder_name):
+        if not rules:
+            return None
+        for rule in rules:
+            if not rule.get('enable', True):
+                continue
+            match = rule.get('match_folder', '')
+            if match == '*' or match == folder_name:
+                return rule
+        return None
+
+    def _refresh_preview(self):
+        src_path = self.src_edit.text().strip()
+        ext_to_folder = {}
+        for r in range(self.ext_table.rowCount()):
+            chk_item = self.ext_table.item(r, 0)
+            ext_item = self.ext_table.item(r, 1)
+            name_item = self.ext_table.item(r, 2)
+            if (chk_item and chk_item.checkState() == Qt.CheckState.Checked
+                    and ext_item and ext_item.text().strip()):
+                ext_to_folder[ext_item.text().strip()] = name_item.text().strip() if name_item else ""
+
+        for row in range(5):
+            self.preview_table.blockSignals(True)
+            for col in (0, 1):
+                item = self.preview_table.item(row, col)
+                if not item:
+                    item = QTableWidgetItem("")
+                    self.preview_table.setItem(row, col, item)
+            self.preview_table.blockSignals(False)
+            self.preview_table.item(row, 0).setText("")
+            self.preview_table.item(row, 1).setText("")
+
+        sample_files = []
+        for ext, folder in ext_to_folder.items():
+            candidates = []
+            if src_path and os.path.isdir(src_path):
+                try:
+                    for f in Path(src_path).iterdir():
+                        if f.is_file() and f.suffix.lower() == ext:
+                            candidates.append(f.name)
+                except Exception:
+                    pass
+            if not candidates:
+                candidates = [f"file{i+1}{ext}" for i in range(3)]
+            sample_files.extend([(f, ext, folder) for f in candidates[:5]])
+
+        naming_rules = self._collect_naming_rules()
+
+        for i, (fname, ext, folder) in enumerate(sample_files[:5]):
+            before_item = self.preview_table.item(i, 0)
+            after_item = self.preview_table.item(i, 1)
+            if before_item:
+                before_item.setText(fname)
+            if after_item:
+                rule = self._match_naming_rule(naming_rules, folder)
+                template = rule.get('template', '').strip() if rule else ''
+                if template:
+                    new_name = render_template(template, i + 1, ext,
+                                               folder, Path(fname).stem)
+                    after_item.setText(new_name if new_name else fname)
+                else:
+                    after_item.setText(fname)
+
+    def _collect_naming_rules(self):
+        rules = []
+        for r in range(self.naming_table.rowCount()):
+            chk_item = self.naming_table.item(r, 0)
+            folder_item = self.naming_table.item(r, 1)
+            tmpl_item = self.naming_table.item(r, 2)
+            if folder_item and folder_item.text().strip():
+                rules.append({
+                    "enable": chk_item and chk_item.checkState() == Qt.CheckState.Checked,
+                    "match_folder": folder_item.text().strip(),
+                    "template": tmpl_item.text().strip() if tmpl_item else "",
+                })
+        return rules
+
     # ==================== 执行流程 ====================
 
     def _build_config(self):
@@ -514,7 +712,7 @@ class MainWindow(QMainWindow):
             'keep_files': self.keep_cb.isChecked(),
             'double_compress': self.double_cb.isChecked(),
             'auto_close': self.auto_close_cb.isChecked(),
-            'skip_rename': self.no_rename_cb.isChecked(),
+            'naming_rules': self._collect_naming_rules(),
         }
 
     def _run(self):
@@ -558,6 +756,46 @@ class MainWindow(QMainWindow):
                                    "请检查源文件夹或勾选正确的扩展名",
                                    width=320, height=170)
                 return
+
+        # 命名冲突预检
+        naming_rules = self._collect_naming_rules()
+        if naming_rules and config['src'] and os.path.isdir(config['src']):
+            ext_to_folder = {}
+            for r in range(self.ext_table.rowCount()):
+                chk_item = self.ext_table.item(r, 0)
+                ext_item = self.ext_table.item(r, 1)
+                name_item = self.ext_table.item(r, 2)
+                if (chk_item and chk_item.checkState() == Qt.CheckState.Checked
+                        and ext_item and ext_item.text().strip()):
+                    ext_to_folder[ext_item.text().strip()] = name_item.text().strip() if name_item else ""
+
+            folder_to_files = {}
+            src_path = Path(config['src'])
+            for f in src_path.iterdir():
+                if f.is_file():
+                    folder = ext_to_folder.get(f.suffix.lower())
+                    if folder:
+                        folder_to_files.setdefault(folder, []).append(f)
+
+            for rule in naming_rules:
+                if not rule.get('enable', True):
+                    continue
+                tmpl = rule.get('template', '').strip()
+                if not tmpl:
+                    continue
+                match = rule.get('match_folder', '')
+                if match == '*':
+                    for folder_name, files in folder_to_files.items():
+                        conflicts = check_naming_conflicts(folder_name, files, tmpl)
+                        if conflicts:
+                            show_conflict_dialog(self, folder_name, tmpl, conflicts)
+                            return
+                elif match in folder_to_files:
+                    files = folder_to_files[match]
+                    conflicts = check_naming_conflicts(match, files, tmpl)
+                    if conflicts:
+                        show_conflict_dialog(self, match, tmpl, conflicts)
+                        return
 
         self.run_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
