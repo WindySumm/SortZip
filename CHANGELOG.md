@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.4.1 (2026-07-06)
+
+### 🔐 压缩密码确认
+
+- **新增「确认密码」输入框**：位于压缩密码下方，用于防止密码输入错误
+- **显示/隐藏联动**：显示按钮同时控制两个密码字段的可见性
+- **密码一致性校验**：执行前检查两次密码是否一致，不一致时弹出统一风格警告
+
+---
+
+## v0.4.0 (2026-07-06)
+
+### 📦 模块化重构
+
+- **提取 `sortzip_core/` 包**：`main.py`（GUI）+ `SortZip.py`（CLI）精简为薄入口，核心代码移至包内：
+  - `sortzip_core/constants.py` — `EXT_CATEGORIES`, `DARK_QSS`, `validate_win_folder_name`
+  - `sortzip_core/engine.py` — `classify_files`, `rename_files_in_folders`, `group_compress`, `main_from_config`, `cli`
+  - `sortzip_core/widgets.py` — `DropLineEdit`, `LogStream`, `Worker`, `resource_path`, `show_styled_dialog`, `show_stats_dialog`
+  - `sortzip_core/app.py` — `MainWindow` 全部 UI 逻辑, `main()` 入口
+  - `sortzip_core/__init__.py` — 版本号
+- **向后兼容**：`main.py` / `SortZip.py` 保持原有导入路径，现有导入 `from SortZip import ...` 仍有效
+
+### 🏷️ 单文件组压缩包命名优化
+
+- **压缩包命名规则**：当组内只有一个文件时（如 `1-1.zipp`），改为 `1.zipp`，避免冗余的重复数字
+
+---
+
 ## v0.3.5 (2026-06-24)
 
 ### 🌗 深色模式 + 关于页面
