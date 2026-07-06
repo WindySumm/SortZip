@@ -41,10 +41,10 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(0)
 
         # ======== 左侧导航栏 ========
-        sidebar = QWidget()
-        sidebar.setFixedWidth(120)
-        sidebar.setProperty("sidebar", True)
-        sidebar_layout = QVBoxLayout(sidebar)
+        self.sidebar = QWidget()
+        self.sidebar.setFixedWidth(120)
+        self.sidebar.setProperty("sidebar", True)
+        sidebar_layout = QVBoxLayout(self.sidebar)
         sidebar_layout.setContentsMargins(8, 16, 8, 16)
         sidebar_layout.setSpacing(4)
 
@@ -60,7 +60,7 @@ class MainWindow(QMainWindow):
 
         sidebar_layout.addStretch()
 
-        sidebar.setStyleSheet("""
+        self.sidebar.setStyleSheet("""
             QPushButton {
                 text-align: left;
                 padding: 8px 14px;
@@ -79,7 +79,7 @@ class MainWindow(QMainWindow):
             }
         """)
 
-        main_layout.addWidget(sidebar)
+        main_layout.addWidget(self.sidebar)
 
         # ======== 右侧内容区（页面栈） ========
         self.stack = QStackedWidget()
@@ -414,8 +414,29 @@ class MainWindow(QMainWindow):
             self._sync_naming_from_ext()
 
     def _toggle_theme(self):
-        qss = DARK_QSS if self.dark_mode_cb.isChecked() else ""
+        is_dark = self.dark_mode_cb.isChecked()
+        qss = DARK_QSS if is_dark else ""
         QApplication.instance().setStyleSheet(qss)
+        hover = "#3c3c3c" if is_dark else "#e0e0e0"
+        sidebar_style = f"""
+            QPushButton {{
+                text-align: left;
+                padding: 8px 14px;
+                border: none;
+                border-radius: 6px;
+                font-size: 13px;
+                background-color: transparent;
+            }}
+            QPushButton:hover {{
+                background-color: {hover};
+            }}
+            QPushButton[active="true"] {{
+                background-color: #0078d4;
+                color: white;
+                font-weight: bold;
+            }}
+        """
+        self.sidebar.setStyleSheet(sidebar_style)
 
     def _open_github(self):
         QDesktopServices.openUrl(QUrl("https://github.com/WindySumm/SortZip"))
