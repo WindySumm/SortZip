@@ -247,7 +247,7 @@ class MainWindow(QMainWindow):
         rename_layout.addWidget(self.naming_table, 1)
 
         naming_btn_row = QHBoxLayout()
-        self.naming_add_btn = QPushButton("添加")
+        self.naming_add_btn = QPushButton("添加通配规则")
         self.naming_del_btn = QPushButton("删除选中")
         naming_btn_row.addWidget(self.naming_add_btn)
         naming_btn_row.addWidget(self.naming_del_btn)
@@ -372,6 +372,8 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(index)
         if index == 1:
             self._resize_ext_columns()
+        elif index == 2:
+            self._sync_naming_from_ext()
 
     def _toggle_theme(self):
         qss = DARK_QSS if self.dark_mode_cb.isChecked() else ""
@@ -425,26 +427,64 @@ class MainWindow(QMainWindow):
 
     def _save_naming_state(self):
         self.settings.beginWriteArray("naming_rules")
+        idx = 0
         for r in range(self.naming_table.rowCount()):
-            self.settings.setArrayIndex(r)
-            chk_item = self.naming_table.item(r, 0)
             folder_item = self.naming_table.item(r, 1)
+            if not folder_item or not folder_item.text().strip():
+                continue
+            self.settings.setArrayIndex(idx)
+            chk_item = self.naming_table.item(r, 0)
             tmpl_item = self.naming_table.item(r, 2)
             self.settings.setValue("enable", chk_item.checkState() == Qt.CheckState.Checked)
-            self.settings.setValue("match_folder", folder_item.text() if folder_item else "")
+            self.settings.setValue("match_folder", folder_item.text().strip())
             self.settings.setValue("template", tmpl_item.text() if tmpl_item else "")
+            idx += 1
         self.settings.endArray()
 
     def _load_naming_state(self):
+        saved = {}
         count = self.settings.beginReadArray("naming_rules")
         for r in range(count):
             self.settings.setArrayIndex(r)
-            enable = self.settings.value("enable", False, type=bool)
             folder = self.settings.value("match_folder", "")
-            tmpl = self.settings.value("template", "")
             if folder:
-                self._add_naming_row(folder, tmpl, enable=enable)
+                saved[folder] = {
+                    "enable": self.settings.value("enable", False, type=bool),
+                    "template": self.settings.value("template", ""),
+                }
         self.settings.endArray()
+        self._apply_naming_sync(saved)
+
+    def _sync_naming_from_ext(self):
+        saved = {}
+        count = self.settings.beginReadArray("naming_rules")
+        for r in range(count):
+            self.settings.setArrayIndex(r)
+            folder = self.settings.value("match_folder", "")
+            if folder:
+                saved[folder] = {
+                    "enable": self.settings.value("enable", False, type=bool),
+                    "template": self.settings.value("template", ""),
+                }
+        self.settings.endArray()
+        self._apply_naming_sync(saved)
+
+    def _apply_naming_sync(self, saved):
+        folders = set()
+        for r in range(self.ext_table.rowCount()):
+            name_item = self.ext_table.item(r, 2)
+            if name_item and name_item.text().strip():
+                folders.add(name_item.text().strip())
+
+        self.naming_table.blockSignals(True)
+        self.naming_table.setRowCount(0)
+        for folder in sorted(folders):
+            data = saved.get(folder, {})
+            enable = data.get("enable", True)
+            template = data.get("template", "{n}{ext}")
+            self._add_naming_row(folder, template, enable=enable)
+        self.naming_table.blockSignals(False)
+        self._refresh_preview()
 
     # ==================== 辅助方法 ====================
 
@@ -663,9 +703,8 @@ class MainWindow(QMainWindow):
                 before_item.setText(fname)
             if after_item:
                 rule = self._match_naming_rule(naming_rules, folder)
-                template = rule.get('template', '').strip() if rule else ''
-                if template:
-                    new_name = render_template(template, i + 1, ext,
+                if rule:
+                    new_name = render_template(rule.get('template', ''), i + 1, ext,
                                                folder, Path(fname).stem)
                     after_item.setText(new_name if new_name else fname)
                 else:

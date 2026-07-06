@@ -88,11 +88,11 @@ def rename_files_in_folders(dest_root, sort_by='name', on_progress=None, cancel_
         if not files:
             continue
         rule = _match_rule(naming_rules, folder.name)
-        template = rule.get('template', '') if rule else ''
-        if not template:
-            print(f"跳过重命名（模板为空）: {folder.name}")
+        if not rule:
+            print(f"跳过重命名（未匹配规则）: {folder.name}")
             done += len(files)
             continue
+        template = rule.get('template', '')
         if sort_by == 'mtime':
             files.sort(key=lambda f: f.stat().st_mtime)
         else:
