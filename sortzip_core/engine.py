@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+import unicodedata
 from pathlib import Path
 
 
@@ -72,26 +73,91 @@ def check_naming_conflicts(folder_name, files, template):
     return conflicts
 
 
-def write_rename_list(dest_root, naming_rules, sort_by='name'):
+def _disp_len(text):
+    width = 0
+    for c in text:
+        if unicodedata.east_asian_width(c) in ('W', 'F'):
+            width += 2
+        else:
+            width += 1
+    return width
+
+
+def _pad_center(text, width):
+    dlen = _disp_len(text)
+    pad = width - dlen
+    if pad <= 0:
+        return text
+    left = (pad + 1) // 2
+    right = pad - left
+    return ' ' * left + text + ' ' * right
+
+
+def _wrap_text(text, width):
+    chunks = []
+    remaining = text
+    while remaining:
+        for take in range(len(remaining), -1, -1):
+            if take == 0:
+                chunks.append('')
+                remaining = ''
+                break
+            if _disp_len(remaining[:take]) <= width:
+                chunks.append(remaining[:take])
+                remaining = remaining[take:]
+                break
+    return chunks
+
+
+SEP = "\t"
+
+
+def write_rename_list(dest_root, naming_rules, sort_by='name', group_size=1, archive_suffix='.zip'):
+    COL_W = (4, 24, 24, 24)
+    HEADERS = ("序号", "原文件名", "新文件名", "所属压缩包名")
     dest_root = Path(dest_root)
     for folder in sorted(f for f in dest_root.iterdir() if f.is_dir()):
         files = [f for f in folder.iterdir() if f.is_file()]
         if not files:
             continue
-        rule = _match_rule(naming_rules, folder.name)
-        if not rule:
-            continue
-        template = rule.get('template', '')
-        if not template:
-            continue
+        rule = _match_rule(naming_rules, folder.name) if naming_rules else None
+        template = rule.get('template', '') if rule else ''
         if sort_by == 'mtime':
             files.sort(key=lambda f: f.stat().st_mtime)
         else:
             files.sort(key=lambda f: f.name)
-        lines = ["序号\t原文件名\t重命名后"]
+
+        total = len(files)
+        hdr_cells = [_pad_center(h, COL_W[i]) for i, h in enumerate(HEADERS)]
+        lines = [SEP.join(hdr_cells)]
+
         for idx, f in enumerate(files, start=1):
-            new_name = render_template(template, idx, f.suffix, folder.name, f.stem)
-            lines.append(f"{idx}\t{f.name}\t{new_name}")
+            new_name = render_template(template, idx, f.suffix, folder.name, f.stem) or f.name
+            # compute archive name for this file
+            g = (idx - 1) // group_size
+            s = g * group_size + 1
+            e = min(g * group_size + group_size, total)
+            base = str(s) if s == e else f"{s}-{e}"
+            archive_name = f"{base}{archive_suffix}"
+
+            idx_str = str(idx)
+            orig_str = f.name
+            new_str = new_name
+            arch_str = archive_name
+
+            idx_lines = _wrap_text(idx_str, COL_W[0])
+            orig_lines = _wrap_text(orig_str, COL_W[1])
+            new_lines = _wrap_text(new_str, COL_W[2])
+            arch_lines = _wrap_text(arch_str, COL_W[3])
+            max_rows = max(len(idx_lines), len(orig_lines), len(new_lines), len(arch_lines))
+
+            for ri in range(max_rows):
+                a = _pad_center(idx_lines[ri] if ri < len(idx_lines) else '', COL_W[0])
+                b = _pad_center(orig_lines[ri] if ri < len(orig_lines) else '', COL_W[1])
+                c = _pad_center(new_lines[ri] if ri < len(new_lines) else '', COL_W[2])
+                d = _pad_center(arch_lines[ri] if ri < len(arch_lines) else '', COL_W[3])
+                lines.append(SEP.join((a, b, c, d)))
+
         list_path = folder / "List.txt"
         list_path.write_text("\n".join(lines), encoding="utf-8")
         print(f"已输出命名对照表: {list_path}")
@@ -108,7 +174,7 @@ def rename_files_in_folders(dest_root, sort_by='name', on_progress=None, cancel_
     for folder in folders:
         if _check_cancel(cancel_check):
             return
-        files = [f for f in folder.iterdir() if f.is_file()]
+        files = [f for f in folder.iterdir() if f.is_file() and f.name != 'List.txt']
         if not files:
             continue
         rule = _match_rule(naming_rules, folder.name)
@@ -178,7 +244,7 @@ def group_compress(dest_root, group_size, password, volume_size=None,
     all_groups = []
     for folder in folders:
         files = [f for f in folder.iterdir() if f.is_file()]
-        files = [f for f in files if f.suffix.lower() != '.zip']
+        files = [f for f in files if f.suffix.lower() != '.zip' and f.name != 'List.txt']
         if sort_by == 'mtime':
             files.sort(key=lambda f: f.stat().st_mtime)
         else:
@@ -276,8 +342,9 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
     print(f"分卷: {'自动检测' if config['volume'] is None else config['volume']}")
     print(f"压缩工具: {config['bandizip']}")
     print(f"自定义分类: {config['custom_names']}")
-    print(f"排序依据: {config['sort_by']}")
-    print(f"保留原始文件: {config['keep_files']}")
+    print(f"排序依据: {'文件名' if config['sort_by'] == 'name' else '修改时间'}")
+    print(f"保留原始文件: {'开启' if config['keep_files'] else '关闭'}")
+    print(f"输出目录: {'开启' if config.get('output_list', False) else '关闭'}")
     print(f"二次打包: {'开启' if config['double_compress'] else '关闭'}")
     print(f"自动关闭窗口: {'开启' if config.get('auto_close', True) else '关闭'}")
     print("=" * 40)
@@ -295,9 +362,10 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
     print("分类完成。")
     if _check_cancel(cancel_check):
         return
-    if config.get('output_list', False) and naming_rules:
+    if config.get('output_list', False):
         print("输出命名对照表...")
-        write_rename_list(dest, naming_rules, config.get('sort_by', 'name'))
+        write_rename_list(dest, naming_rules, config.get('sort_by', 'name'),
+                          config.get('group_size', 1), config.get('archive_suffix', '.zip'))
     print("开始重命名...")
     rename_files_in_folders(dest, config['sort_by'],
                             on_progress=lambda c, t, m: on_progress(30, 40, c, t, m) if on_progress else None,

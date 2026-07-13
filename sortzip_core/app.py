@@ -394,7 +394,7 @@ class MainWindow(QMainWindow):
 
         about_group = QGroupBox("关于")
         about_layout = QVBoxLayout(about_group)
-        ver_label = QLabel("版本: v0.6.1")
+        ver_label = QLabel("版本: v0.6.2")
         about_layout.addWidget(ver_label)
         self.github_btn = QPushButton("打开 GitHub 仓库")
         self.github_btn.clicked.connect(self._open_github)
