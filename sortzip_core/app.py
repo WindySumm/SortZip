@@ -315,12 +315,15 @@ class MainWindow(QMainWindow):
 
         self.keep_cb = QCheckBox("保留原始文件")
         self.keep_cb.setChecked(self.settings.value("keep_files", False, type=bool))
+        self.output_list_cb = QCheckBox("输出目录")
+        self.output_list_cb.setChecked(self.settings.value("output_list", False, type=bool))
         self.double_cb = QCheckBox("二次压缩")
         self.double_cb.setChecked(self.settings.value("double_compress", True, type=bool))
         self.auto_close_cb = QCheckBox("自动关闭 Bandizip 窗口")
         self.auto_close_cb.setChecked(self.settings.value("auto_close", True, type=bool))
 
         opt_check_row.addWidget(self.keep_cb)
+        opt_check_row.addWidget(self.output_list_cb)
         opt_check_row.addWidget(self.double_cb)
         opt_check_row.addWidget(self.auto_close_cb)
         opt_check_row.addStretch()
@@ -451,6 +454,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("password", self.password_edit.text())
         self.settings.setValue("volume", self.volume_edit.text())
         self.settings.setValue("keep_files", self.keep_cb.isChecked())
+        self.settings.setValue("output_list", self.output_list_cb.isChecked())
         self.settings.setValue("double_compress", self.double_cb.isChecked())
         self.settings.setValue("auto_close", self.auto_close_cb.isChecked())
         self.settings.setValue("dark_mode", self.dark_mode_cb.isChecked())
@@ -835,6 +839,7 @@ class MainWindow(QMainWindow):
             'custom_names': custom_names,
             'sort_by': sort_map.get(self.sort_combo.currentText(), 'name'),
             'keep_files': self.keep_cb.isChecked(),
+            'output_list': self.output_list_cb.isChecked(),
             'double_compress': self.double_cb.isChecked(),
             'auto_close': self.auto_close_cb.isChecked(),
             'naming_rules': self._collect_naming_rules(),

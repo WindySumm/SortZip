@@ -72,6 +72,31 @@ def check_naming_conflicts(folder_name, files, template):
     return conflicts
 
 
+def write_rename_list(dest_root, naming_rules, sort_by='name'):
+    dest_root = Path(dest_root)
+    for folder in sorted(f for f in dest_root.iterdir() if f.is_dir()):
+        files = [f for f in folder.iterdir() if f.is_file()]
+        if not files:
+            continue
+        rule = _match_rule(naming_rules, folder.name)
+        if not rule:
+            continue
+        template = rule.get('template', '')
+        if not template:
+            continue
+        if sort_by == 'mtime':
+            files.sort(key=lambda f: f.stat().st_mtime)
+        else:
+            files.sort(key=lambda f: f.name)
+        lines = ["序号\t原文件名\t重命名后"]
+        for idx, f in enumerate(files, start=1):
+            new_name = render_template(template, idx, f.suffix, folder.name, f.stem)
+            lines.append(f"{idx}\t{f.name}\t{new_name}")
+        list_path = folder / "List.txt"
+        list_path.write_text("\n".join(lines), encoding="utf-8")
+        print(f"已输出命名对照表: {list_path}")
+
+
 def rename_files_in_folders(dest_root, sort_by='name', on_progress=None, cancel_check=None,
                             naming_rules=None):
     dest_root = Path(dest_root)
@@ -270,6 +295,9 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
     print("分类完成。")
     if _check_cancel(cancel_check):
         return
+    if config.get('output_list', False) and naming_rules:
+        print("输出命名对照表...")
+        write_rename_list(dest, naming_rules, config.get('sort_by', 'name'))
     print("开始重命名...")
     rename_files_in_folders(dest, config['sort_by'],
                             on_progress=lambda c, t, m: on_progress(30, 40, c, t, m) if on_progress else None,
