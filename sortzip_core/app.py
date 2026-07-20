@@ -164,6 +164,10 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(basic_group)
 
+        self.recursive_cb = QCheckBox("包含子文件夹")
+        self.recursive_cb.setChecked(self.settings.value("recursive", False, type=bool))
+        layout.addWidget(self.recursive_cb)
+
         layout.addStretch()
         self.stack.addWidget(page)
 
@@ -454,6 +458,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("password", self.password_edit.text())
         self.settings.setValue("volume", self.volume_edit.text())
         self.settings.setValue("keep_files", self.keep_cb.isChecked())
+        self.settings.setValue("recursive", self.recursive_cb.isChecked())
         self.settings.setValue("output_list", self.output_list_cb.isChecked())
         self.settings.setValue("double_compress", self.double_cb.isChecked())
         self.settings.setValue("auto_close", self.auto_close_cb.isChecked())
@@ -762,7 +767,9 @@ class MainWindow(QMainWindow):
         folder_files = {}
         if src_path and os.path.isdir(src_path):
             try:
-                for f in Path(src_path).iterdir():
+                recursive = self.recursive_cb.isChecked()
+                iterator = Path(src_path).rglob('*') if recursive else Path(src_path).iterdir()
+                for f in iterator:
                     if f.is_file():
                         folder = ext_to_folder.get(f.suffix.lower())
                         if folder:
@@ -839,6 +846,7 @@ class MainWindow(QMainWindow):
             'custom_names': custom_names,
             'sort_by': sort_map.get(self.sort_combo.currentText(), 'name'),
             'keep_files': self.keep_cb.isChecked(),
+            'recursive': self.recursive_cb.isChecked(),
             'output_list': self.output_list_cb.isChecked(),
             'double_compress': self.double_cb.isChecked(),
             'auto_close': self.auto_close_cb.isChecked(),
@@ -880,7 +888,9 @@ class MainWindow(QMainWindow):
                 return
 
         if custom_names and config['src'] and os.path.isdir(config['src']):
-            src_exts = set(f.suffix.lower() for f in Path(config['src']).iterdir() if f.is_file())
+            recursive = config.get('recursive', False)
+            iterator = Path(config['src']).rglob('*') if recursive else Path(config['src']).iterdir()
+            src_exts = set(f.suffix.lower() for f in iterator if f.is_file())
             checked_exts = set(custom_names.keys())
             if not src_exts & checked_exts:
                 show_styled_dialog(self, "无匹配文件",
@@ -903,7 +913,9 @@ class MainWindow(QMainWindow):
 
             folder_to_files = {}
             src_path = Path(config['src'])
-            for f in src_path.iterdir():
+            recursive = config.get('recursive', False)
+            iterator = src_path.rglob('*') if recursive else src_path.iterdir()
+            for f in iterator:
                 if f.is_file():
                     folder = ext_to_folder.get(f.suffix.lower())
                     if folder:

@@ -11,11 +11,14 @@ def _check_cancel(cancel_check):
     return False
 
 
-def classify_files(src_dir, dest_root, custom_names=None, on_progress=None, cancel_check=None, keep_files=False):
+def classify_files(src_dir, dest_root, custom_names=None, on_progress=None, cancel_check=None, keep_files=False, recursive=False):
     src_path = Path(src_dir)
     dest_root = Path(dest_root)
     dest_root.mkdir(parents=True, exist_ok=True)
-    files = [f for f in src_path.iterdir() if f.is_file()]
+    if recursive:
+        files = [f for f in src_path.rglob('*') if f.is_file()]
+    else:
+        files = [f for f in src_path.iterdir() if f.is_file()]
     total = len(files)
     for idx, file_path in enumerate(files, start=1):
         if _check_cancel(cancel_check):
@@ -358,7 +361,8 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
     classify_files(src, dest, custom_names,
                    on_progress=lambda c, t, m: on_progress(0, 30, c, t, m) if on_progress else None,
                    cancel_check=cancel_check,
-                   keep_files=config.get('keep_files', False))
+                   keep_files=config.get('keep_files', False),
+                   recursive=config.get('recursive', False))
     print("分类完成。")
     if _check_cancel(cancel_check):
         return
