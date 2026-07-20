@@ -115,9 +115,14 @@ def _wrap_text(text, width):
 SEP = "\t"
 
 
-def write_rename_list(dest_root, naming_rules, sort_by='name', group_size=1, archive_suffix='.zip'):
-    COL_W = (4, 24, 24, 24)
-    HEADERS = ("序号", "原文件名", "新文件名", "所属压缩包名")
+def write_rename_list(dest_root, naming_rules, sort_by='name', group_size=1, archive_suffix='.zip',
+                      compression_enabled=True):
+    if compression_enabled:
+        COL_W = (4, 24, 24, 24)
+        HEADERS = ("序号", "原文件名", "新文件名", "所属压缩包名")
+    else:
+        COL_W = (4, 24, 24)
+        HEADERS = ("序号", "原文件名", "新文件名")
     dest_root = Path(dest_root)
     for folder in sorted(f for f in dest_root.iterdir() if f.is_dir()):
         files = [f for f in folder.iterdir() if f.is_file()]
@@ -136,30 +141,35 @@ def write_rename_list(dest_root, naming_rules, sort_by='name', group_size=1, arc
 
         for idx, f in enumerate(files, start=1):
             new_name = render_template(template, idx, f.suffix, folder.name, f.stem) or f.name
-            # compute archive name for this file
-            g = (idx - 1) // group_size
-            s = g * group_size + 1
-            e = min(g * group_size + group_size, total)
-            base = str(s) if s == e else f"{s}-{e}"
-            archive_name = f"{base}{archive_suffix}"
 
             idx_str = str(idx)
             orig_str = f.name
             new_str = new_name
-            arch_str = archive_name
 
             idx_lines = _wrap_text(idx_str, COL_W[0])
             orig_lines = _wrap_text(orig_str, COL_W[1])
             new_lines = _wrap_text(new_str, COL_W[2])
-            arch_lines = _wrap_text(arch_str, COL_W[3])
-            max_rows = max(len(idx_lines), len(orig_lines), len(new_lines), len(arch_lines))
+            if compression_enabled:
+                g = (idx - 1) // group_size
+                s = g * group_size + 1
+                e = min(g * group_size + group_size, total)
+                base = str(s) if s == e else f"{s}-{e}"
+                archive_name = f"{base}{archive_suffix}"
+                arch_str = archive_name
+                arch_lines = _wrap_text(arch_str, COL_W[3])
+                max_rows = max(len(idx_lines), len(orig_lines), len(new_lines), len(arch_lines))
+            else:
+                max_rows = max(len(idx_lines), len(orig_lines), len(new_lines))
 
             for ri in range(max_rows):
                 a = _pad_center(idx_lines[ri] if ri < len(idx_lines) else '', COL_W[0])
                 b = _pad_center(orig_lines[ri] if ri < len(orig_lines) else '', COL_W[1])
                 c = _pad_center(new_lines[ri] if ri < len(new_lines) else '', COL_W[2])
-                d = _pad_center(arch_lines[ri] if ri < len(arch_lines) else '', COL_W[3])
-                lines.append(SEP.join((a, b, c, d)))
+                if compression_enabled:
+                    d = _pad_center(arch_lines[ri] if ri < len(arch_lines) else '', COL_W[3])
+                    lines.append(SEP.join((a, b, c, d)))
+                else:
+                    lines.append(SEP.join((a, b, c)))
 
         list_path = folder / "List.txt"
         list_path.write_text("\n".join(lines), encoding="utf-8")
@@ -241,7 +251,7 @@ def get_auto_volume(total_size_bytes):
 def group_compress(dest_root, group_size, password, volume_size=None,
                    bandizip_path='bandizip', keep_files=False, double_compress=True,
                    auto_close=True, on_progress=None, cancel_check=None,
-                   sort_by='name', archive_suffix='.zipp'):
+                   sort_by='name', archive_suffix='.zipp', first_suffix='-First'):
     dest_root = Path(dest_root)
     folders = [f for f in dest_root.iterdir() if f.is_dir()]
     all_groups = []
@@ -264,7 +274,7 @@ def group_compress(dest_root, group_size, password, volume_size=None,
             base_name = f"{start_num}"
         else:
             base_name = f"{start_num}-{end_num}"
-        first_name = f"{base_name}-First"
+        first_name = f"{base_name}{first_suffix}"
         zip_name = f"{first_name}.zip"
         zip_path = folder / zip_name
         if volume_size is None:
@@ -348,8 +358,9 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
     print(f"排序依据: {'文件名' if config['sort_by'] == 'name' else '修改时间'}")
     print(f"保留原始文件: {'开启' if config['keep_files'] else '关闭'}")
     print(f"输出目录: {'开启' if config.get('output_list', False) else '关闭'}")
-    print(f"二次打包: {'开启' if config['double_compress'] else '关闭'}")
+    print(f"二次打包: {'开启' if config.get('double_compress', True) else '关闭'}")
     print(f"自动关闭窗口: {'开启' if config.get('auto_close', True) else '关闭'}")
+    print(f"一次压缩: {'开启' if config.get('first_compress', True) else '关闭'}")
     print("=" * 40)
     src = config['src']
     dest = config['dest']
@@ -369,7 +380,8 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
     if config.get('output_list', False):
         print("输出命名对照表...")
         write_rename_list(dest, naming_rules, config.get('sort_by', 'name'),
-                          config.get('group_size', 1), config.get('archive_suffix', '.zip'))
+                          config.get('group_size', 1), config.get('archive_suffix', '.zip'),
+                          compression_enabled=config.get('first_compress', True))
     print("开始重命名...")
     rename_files_in_folders(dest, config['sort_by'],
                             on_progress=lambda c, t, m: on_progress(30, 40, c, t, m) if on_progress else None,
@@ -378,24 +390,27 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
     print("重命名完成。")
     if _check_cancel(cancel_check):
         return
-    if _check_cancel(cancel_check):
-        return
-    print("开始分组压缩...")
-    group_compress(
-        dest_root=dest,
-        group_size=config['group_size'],
-        password=config['password'],
-        volume_size=config['volume'],
-        bandizip_path=config['bandizip'],
-        keep_files=False,
-        double_compress=config['double_compress'],
-        auto_close=config.get('auto_close', True),
-        on_progress=lambda c, t, m: on_progress(40, 100, c, t, m) if on_progress else None,
-        cancel_check=cancel_check,
-        sort_by=config.get('sort_by', 'name'),
-        archive_suffix=config.get('archive_suffix', '.zipp'),
-    )
-    print("所有任务完成！")
+    if config.get('first_compress', True):
+        print("开始分组压缩...")
+        first_suffix = '-First' if config.get('double_compress', True) else ''
+        group_compress(
+            dest_root=dest,
+            group_size=config['group_size'],
+            password=config['password'],
+            volume_size=config['volume'],
+            bandizip_path=config['bandizip'],
+            keep_files=False,
+            double_compress=config.get('double_compress', True),
+            auto_close=config.get('auto_close', True),
+            on_progress=lambda c, t, m: on_progress(40, 100, c, t, m) if on_progress else None,
+            cancel_check=cancel_check,
+            sort_by=config.get('sort_by', 'name'),
+            archive_suffix=config.get('archive_suffix', '.zipp'),
+            first_suffix=first_suffix,
+        )
+        print("所有任务完成！")
+    else:
+        print("压缩已禁用，仅完成分类与重命名。")
 
 
 def cli():
@@ -410,6 +425,7 @@ def cli():
         'sort_by': 'name',
         'keep_files': False,
         'double_compress': True,
+        'first_compress': True,
         'auto_close': True,
     }
     main_from_config(CONFIG)

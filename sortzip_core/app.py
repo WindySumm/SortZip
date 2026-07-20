@@ -313,25 +313,19 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
-        opt_group = QGroupBox("选项")
-        opt_layout = QVBoxLayout(opt_group)
-        opt_check_row = QHBoxLayout()
+        # 压缩设置
+        compress_group = QGroupBox("压缩设置")
+        compress_layout = QVBoxLayout(compress_group)
 
-        self.keep_cb = QCheckBox("保留原始文件")
-        self.keep_cb.setChecked(self.settings.value("keep_files", False, type=bool))
-        self.output_list_cb = QCheckBox("输出目录")
-        self.output_list_cb.setChecked(self.settings.value("output_list", False, type=bool))
+        self.first_cb = QCheckBox("一次压缩")
+        self.first_cb.setChecked(self.settings.value("first_compress", True, type=bool))
+        self.first_cb.toggled.connect(self._on_first_compress_toggled)
+        compress_layout.addWidget(self.first_cb)
+
         self.double_cb = QCheckBox("二次压缩")
         self.double_cb.setChecked(self.settings.value("double_compress", True, type=bool))
-        self.auto_close_cb = QCheckBox("自动关闭 Bandizip 窗口")
-        self.auto_close_cb.setChecked(self.settings.value("auto_close", True, type=bool))
-
-        opt_check_row.addWidget(self.keep_cb)
-        opt_check_row.addWidget(self.output_list_cb)
-        opt_check_row.addWidget(self.double_cb)
-        opt_check_row.addWidget(self.auto_close_cb)
-        opt_check_row.addStretch()
-        opt_layout.addLayout(opt_check_row)
+        self.double_cb.toggled.connect(self._on_double_compress_toggled)
+        compress_layout.addWidget(self.double_cb)
 
         fmt_row = QHBoxLayout()
         fmt_row.addWidget(QLabel("压缩格式:"))
@@ -345,10 +339,29 @@ class MainWindow(QMainWindow):
         self.compress_format_combo.currentTextChanged.connect(self._on_compress_format_changed)
         fmt_row.addWidget(self.compress_format_combo)
         fmt_row.addStretch()
-        opt_layout.addLayout(fmt_row)
+        compress_layout.addLayout(fmt_row)
 
-        layout.addWidget(opt_group)
+        layout.addWidget(compress_group)
 
+        # 其他选项
+        other_group = QGroupBox("其他选项")
+        other_layout = QVBoxLayout(other_group)
+
+        self.keep_cb = QCheckBox("保留原始文件")
+        self.keep_cb.setChecked(self.settings.value("keep_files", False, type=bool))
+        other_layout.addWidget(self.keep_cb)
+
+        self.output_list_cb = QCheckBox("输出目录（List.txt）")
+        self.output_list_cb.setChecked(self.settings.value("output_list", False, type=bool))
+        other_layout.addWidget(self.output_list_cb)
+
+        self.auto_close_cb = QCheckBox("自动关闭 Bandizip 窗口")
+        self.auto_close_cb.setChecked(self.settings.value("auto_close", True, type=bool))
+        other_layout.addWidget(self.auto_close_cb)
+
+        layout.addWidget(other_group)
+
+        # 进度条 + 按钮
         progress_row = QHBoxLayout()
         self.progress_bar = QProgressBar()
         self.progress_bar.setMinimum(0)
@@ -398,7 +411,7 @@ class MainWindow(QMainWindow):
 
         about_group = QGroupBox("关于")
         about_layout = QVBoxLayout(about_group)
-        ver_label = QLabel("版本: v0.6.2")
+        ver_label = QLabel("版本: v0.6.4")
         about_layout.addWidget(ver_label)
         self.github_btn = QPushButton("打开 GitHub 仓库")
         self.github_btn.clicked.connect(self._open_github)
@@ -460,6 +473,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("keep_files", self.keep_cb.isChecked())
         self.settings.setValue("recursive", self.recursive_cb.isChecked())
         self.settings.setValue("output_list", self.output_list_cb.isChecked())
+        self.settings.setValue("first_compress", self.first_cb.isChecked())
         self.settings.setValue("double_compress", self.double_cb.isChecked())
         self.settings.setValue("auto_close", self.auto_close_cb.isChecked())
         self.settings.setValue("dark_mode", self.dark_mode_cb.isChecked())
@@ -742,6 +756,14 @@ class MainWindow(QMainWindow):
         self.archive_suffix_edit.setText(suffix)
         self.archive_suffix_edit.setPlaceholderText(suffix)
 
+    def _on_first_compress_toggled(self, checked):
+        if not checked and self.double_cb.isChecked():
+            self.double_cb.setChecked(False)
+
+    def _on_double_compress_toggled(self, checked):
+        if checked and not self.first_cb.isChecked():
+            self.first_cb.setChecked(True)
+
     def _match_naming_rule(self, rules, folder_name):
         if not rules:
             return None
@@ -848,6 +870,7 @@ class MainWindow(QMainWindow):
             'keep_files': self.keep_cb.isChecked(),
             'recursive': self.recursive_cb.isChecked(),
             'output_list': self.output_list_cb.isChecked(),
+            'first_compress': self.first_cb.isChecked(),
             'double_compress': self.double_cb.isChecked(),
             'auto_close': self.auto_close_cb.isChecked(),
             'naming_rules': self._collect_naming_rules(),
