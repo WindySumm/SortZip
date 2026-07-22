@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QFormLayout, QLineEdit, QSpinBox, QComboBox,
     QCheckBox, QPushButton, QProgressBar, QTextEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QLabel, QFileDialog, QScrollArea, QGridLayout,
-    QStackedWidget, QTabBar,
+    QStackedWidget, QTabBar, QDialog,
 )
 from PySide6.QtCore import Qt, QThread, Slot, QSettings, QUrl
 from PySide6.QtGui import QIcon, QTextCursor, QDesktopServices
@@ -452,6 +452,13 @@ class MainWindow(QMainWindow):
         theme_layout.addWidget(self.dark_mode_cb)
         layout.addWidget(theme_group)
 
+        exec_group = QGroupBox("执行选项")
+        exec_layout = QVBoxLayout(exec_group)
+        self.confirm_config_cb = QCheckBox("执行前确认参数")
+        self.confirm_config_cb.setChecked(self.settings.value("confirm_config", True, type=bool))
+        exec_layout.addWidget(self.confirm_config_cb)
+        layout.addWidget(exec_group)
+
         manual_group = QGroupBox("使用手册")
         manual_layout = QVBoxLayout(manual_group)
         self.manual_btn = QPushButton("打开使用手册")
@@ -536,6 +543,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("archive_suffix", self.archive_suffix_edit.text())
         self.settings.setValue("archive_format", self.compress_format_combo.currentText())
         self.settings.setValue("keep_hierarchy", self.keep_hierarchy_cb.isChecked())
+        self.settings.setValue("confirm_config", self.confirm_config_cb.isChecked())
         self._save_ext_state()
         self._save_naming_state()
 
@@ -929,6 +937,65 @@ class MainWindow(QMainWindow):
             'keep_hierarchy': self.keep_hierarchy_cb.isChecked(),
         }
 
+    def _confirm_config(self, config):
+        vol_text = config.get('volume') or '自动'
+        vol_enabled = "✔ 启用" if config.get('enable_volume', True) else "✘ 禁用"
+        hier = "✔ 开启" if config.get('keep_hierarchy', False) else "✘ 关闭"
+        keep = "✔ 保留" if config.get('keep_files', False) else "✘ 不保留"
+        out = "✔ 生成" if config.get('output_list', False) else "✘ 不生成"
+
+        fc = config.get('first_compress', True)
+        dc = config.get('double_compress', True)
+        if not fc:
+            mode = "不压缩"
+        elif dc:
+            mode = "一次压缩 + 二次压缩"
+        else:
+            mode = "仅一次压缩"
+
+        lines = [
+            ("每包文件数", f"{config.get('group_size', 1)} 个"),
+            ("压缩模式", mode),
+            ("启用分卷", f"{vol_enabled}（{vol_text}）"),
+            ("保持原文件夹层级", hier),
+            ("保留原始文件", keep),
+            ("输出 List.txt", out),
+        ]
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("参数确认")
+        dlg.setFixedSize(420, 380)
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(8)
+
+        title = QLabel("请确认以下执行参数：")
+        title.setStyleSheet("font-size: 14px; font-weight: bold;")
+        layout.addWidget(title)
+        layout.addSpacing(4)
+
+        form = QFormLayout()
+        form.setSpacing(6)
+        form.setContentsMargins(12, 0, 12, 0)
+        for label, value in lines:
+            v = QLabel(value)
+            v.setStyleSheet("color: #0078d4; font-weight: bold;")
+            form.addRow(QLabel(label + "："), v)
+        layout.addLayout(form)
+        layout.addStretch()
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(dlg.reject)
+        ok_btn = QPushButton("确认执行")
+        ok_btn.setStyleSheet("background: #0078d4; color: white; padding: 4px 16px;")
+        ok_btn.clicked.connect(dlg.accept)
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(ok_btn)
+        layout.addLayout(btn_layout)
+
+        return dlg.exec() == QDialog.DialogCode.Accepted
+
     def _run(self):
         config = self._build_config()
 
@@ -1042,6 +1109,11 @@ class MainWindow(QMainWindow):
                             self.run_btn.setEnabled(True)
                             return
                         seen[key] = True
+
+        if self.confirm_config_cb.isChecked():
+            if not self._confirm_config(config):
+                self.run_btn.setEnabled(True)
+                return
 
         self.run_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
