@@ -11,6 +11,25 @@ def _check_cancel(cancel_check):
     return False
 
 
+SORT_FUNCS = {
+    'name':        lambda f: f.name,
+    'name_desc':   lambda f: (0, f.name),
+    'mtime':       lambda f: f.stat().st_mtime,
+    'mtime_desc':  lambda f: (-f.stat().st_mtime, f.name),
+    'size_asc':    lambda f: f.stat().st_size,
+    'size_desc':   lambda f: (-f.stat().st_size, f.name),
+    'ext':         lambda f: f.suffix,
+}
+
+
+def _sort_files(files, sort_by):
+    fn = SORT_FUNCS.get(sort_by)
+    if fn is None:
+        fn = SORT_FUNCS['name']
+    reverse = sort_by == 'name_desc'
+    files.sort(key=fn, reverse=reverse)
+
+
 def classify_files(src_dir, dest_root, custom_names=None, on_progress=None, cancel_check=None, keep_files=False, recursive=False):
     src_path = Path(src_dir)
     dest_root = Path(dest_root)
@@ -130,10 +149,7 @@ def write_rename_list(dest_root, naming_rules, sort_by='name', group_size=1, arc
             continue
         rule = _match_rule(naming_rules, folder.name) if naming_rules else None
         template = rule.get('template', '') if rule else ''
-        if sort_by == 'mtime':
-            files.sort(key=lambda f: f.stat().st_mtime)
-        else:
-            files.sort(key=lambda f: f.name)
+        _sort_files(files, sort_by)
 
         total = len(files)
         hdr_cells = [_pad_center(h, COL_W[i]) for i, h in enumerate(HEADERS)]
@@ -196,10 +212,7 @@ def rename_files_in_folders(dest_root, sort_by='name', on_progress=None, cancel_
             done += len(files)
             continue
         template = rule.get('template', '')
-        if sort_by == 'mtime':
-            files.sort(key=lambda f: f.stat().st_mtime)
-        else:
-            files.sort(key=lambda f: f.name)
+        _sort_files(files, sort_by)
         rename_map = {}
         for idx, file_path in enumerate(files, start=1):
             new_name = render_template(template, idx, file_path.suffix,
@@ -251,17 +264,15 @@ def get_auto_volume(total_size_bytes):
 def group_compress(dest_root, group_size, password, volume_size=None,
                    bandizip_path='bandizip', keep_files=False, double_compress=True,
                    auto_close=True, on_progress=None, cancel_check=None,
-                   sort_by='name', archive_suffix='.zipp', first_suffix='-First'):
+                   sort_by='name', archive_suffix='.zipp', first_suffix='-First',
+                   enable_volume=True):
     dest_root = Path(dest_root)
     folders = [f for f in dest_root.iterdir() if f.is_dir()]
     all_groups = []
     for folder in folders:
         files = [f for f in folder.iterdir() if f.is_file()]
         files = [f for f in files if f.suffix.lower() != '.zip' and f.name != 'List.txt']
-        if sort_by == 'mtime':
-            files.sort(key=lambda f: f.stat().st_mtime)
-        else:
-            files.sort(key=lambda f: f.name)
+        _sort_files(files, sort_by)
         for i in range(0, len(files), group_size):
             all_groups.append((folder, files[i:i+group_size], i))
     total = len(all_groups)
@@ -277,12 +288,14 @@ def group_compress(dest_root, group_size, password, volume_size=None,
         first_name = f"{base_name}{first_suffix}"
         zip_name = f"{first_name}.zip"
         zip_path = folder / zip_name
-        if volume_size is None:
-            total_bytes = sum(f.stat().st_size for f in group)
-            auto_vol = get_auto_volume(total_bytes)
-            print(f"  组 {base_name} 总大小: {total_bytes / (1024**3):.2f} GB，自动分卷大小 = {auto_vol}")
-        else:
-            auto_vol = None
+        auto_vol = None
+        if enable_volume:
+            if volume_size is None:
+                total_bytes = sum(f.stat().st_size for f in group)
+                auto_vol = get_auto_volume(total_bytes)
+                print(f"  组 {base_name} 总大小: {total_bytes / (1024**3):.2f} GB，自动分卷大小 = {auto_vol}")
+            else:
+                auto_vol = None
         cmd = [bandizip_path, 'a']
         if password:
             cmd.extend(['-p:' + password])
@@ -355,7 +368,10 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
     print(f"分卷: {'自动检测' if config['volume'] is None else config['volume']}")
     print(f"压缩工具: {config['bandizip']}")
     print(f"自定义分类: {config['custom_names']}")
-    print(f"排序依据: {'文件名' if config['sort_by'] == 'name' else '修改时间'}")
+    sort_labels = {'name': '文件名(升序)', 'name_desc': '文件名(降序)', 'mtime': '修改时间(旧→新)',
+                   'mtime_desc': '修改时间(新→旧)', 'size_asc': '文件大小(小→大)',
+                   'size_desc': '文件大小(大→小)', 'ext': '扩展名'}
+    print(f"排序依据: {sort_labels.get(config.get('sort_by', 'name'), config.get('sort_by', 'name'))}")
     print(f"保留原始文件: {'开启' if config['keep_files'] else '关闭'}")
     print(f"输出目录: {'开启' if config.get('output_list', False) else '关闭'}")
     print(f"二次打包: {'开启' if config.get('double_compress', True) else '关闭'}")
@@ -407,6 +423,7 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
             sort_by=config.get('sort_by', 'name'),
             archive_suffix=config.get('archive_suffix', '.zipp'),
             first_suffix=first_suffix,
+            enable_volume=config.get('enable_volume', True),
         )
         print("所有任务完成！")
     else:
@@ -426,6 +443,7 @@ def cli():
         'keep_files': False,
         'double_compress': True,
         'first_compress': True,
+        'enable_volume': True,
         'auto_close': True,
     }
     main_from_config(CONFIG)

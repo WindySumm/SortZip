@@ -13,7 +13,7 @@ from PySide6.QtCore import Qt, QThread, Slot, QSettings, QUrl
 from PySide6.QtGui import QIcon, QTextCursor, QDesktopServices
 
 from sortzip_core.constants import EXT_CATEGORIES, DARK_QSS, RENAME_PRESETS, validate_win_folder_name
-from sortzip_core.engine import check_naming_conflicts, render_template
+from sortzip_core.engine import check_naming_conflicts, render_template, _sort_files
 from sortzip_core.widgets import (
     resource_path, show_styled_dialog, show_stats_dialog,
     show_manual_dialog, show_conflict_dialog,
@@ -112,39 +112,38 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
-        basic_group = QGroupBox("基本设置")
-        basic_form = QFormLayout(basic_group)
+        # 文件选择
+        file_sel_group = QGroupBox("文件选择")
+        file_sel_layout = QFormLayout(file_sel_group)
 
         self.src_edit = DropLineEdit(self.settings.value("src", ""))
         self.src_btn = QPushButton("浏览")
         src_row = QHBoxLayout()
         src_row.addWidget(self.src_edit)
         src_row.addWidget(self.src_btn)
-        basic_form.addRow("源文件夹:", src_row)
+        file_sel_layout.addRow("源文件夹:", src_row)
 
         self.dest_edit = DropLineEdit(self.settings.value("dest", ""))
         self.dest_btn = QPushButton("浏览")
         dest_row = QHBoxLayout()
         dest_row.addWidget(self.dest_edit)
         dest_row.addWidget(self.dest_btn)
-        basic_form.addRow("目标目录:", dest_row)
+        file_sel_layout.addRow("目标目录:", dest_row)
 
-        self.group_size_spin = QSpinBox()
-        self.group_size_spin.setRange(1, 9999)
-        self.group_size_spin.setValue(int(self.settings.value("group_size", 1)))
-        basic_form.addRow("每包文件数:", self.group_size_spin)
+        self.recursive_cb = QCheckBox("包含子文件夹")
+        self.recursive_cb.setChecked(self.settings.value("recursive", False, type=bool))
+        file_sel_layout.addRow("", self.recursive_cb)
 
-        sort_map_load = {"文件名": 0, "修改时间": 1}
-        self.sort_combo = QComboBox()
-        self.sort_combo.addItems(["文件名", "修改时间"])
-        saved_sort = self.settings.value("sort_by", "文件名")
-        self.sort_combo.setCurrentIndex(sort_map_load.get(saved_sort, 0))
-        basic_form.addRow("排序方式:", self.sort_combo)
+        layout.addWidget(file_sel_group)
+
+        # 密码设置
+        pwd_group = QGroupBox("密码设置")
+        pwd_layout = QFormLayout(pwd_group)
 
         self.password_edit = QLineEdit(self.settings.value("password", ""))
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_edit.setPlaceholderText("留空表示无密码")
-        basic_form.addRow("压缩密码:", self.password_edit)
+        pwd_layout.addRow("压缩密码:", self.password_edit)
 
         self.password_confirm_edit = QLineEdit(self.settings.value("password", ""))
         self.password_confirm_edit.setEchoMode(QLineEdit.EchoMode.Password)
@@ -156,17 +155,35 @@ class MainWindow(QMainWindow):
         pwd_confirm_row = QHBoxLayout()
         pwd_confirm_row.addWidget(self.password_confirm_edit)
         pwd_confirm_row.addWidget(self.pwd_toggle_btn)
-        basic_form.addRow("确认密码:", pwd_confirm_row)
+        pwd_layout.addRow("确认密码:", pwd_confirm_row)
+
+        self.remember_pwd_cb = QCheckBox("记住密码")
+        self.remember_pwd_cb.setChecked(self.settings.value("remember_pwd", False, type=bool))
+        if not self.remember_pwd_cb.isChecked():
+            self.password_edit.clear()
+            self.password_confirm_edit.clear()
+        pwd_layout.addRow("", self.remember_pwd_cb)
+
+        layout.addWidget(pwd_group)
+
+        # 分卷设置
+        volume_group = QGroupBox("分卷设置")
+        volume_layout = QFormLayout(volume_group)
+
+        self.group_size_spin = QSpinBox()
+        self.group_size_spin.setRange(1, 9999)
+        self.group_size_spin.setValue(int(self.settings.value("group_size", 1)))
+        volume_layout.addRow("每包文件数:", self.group_size_spin)
 
         self.volume_edit = QLineEdit(self.settings.value("volume", ""))
         self.volume_edit.setPlaceholderText("留空自动检测")
-        basic_form.addRow("分卷大小:", self.volume_edit)
+        volume_layout.addRow("分卷大小:", self.volume_edit)
 
-        layout.addWidget(basic_group)
+        self.enable_volume_cb = QCheckBox("启用分卷")
+        self.enable_volume_cb.setChecked(self.settings.value("enable_volume", True, type=bool))
+        volume_layout.addRow("", self.enable_volume_cb)
 
-        self.recursive_cb = QCheckBox("包含子文件夹")
-        self.recursive_cb.setChecked(self.settings.value("recursive", False, type=bool))
-        layout.addWidget(self.recursive_cb)
+        layout.addWidget(volume_group)
 
         layout.addStretch()
         self.stack.addWidget(page)
@@ -237,6 +254,23 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
+
+        sort_group = QGroupBox("排序设置")
+        sort_layout = QFormLayout(sort_group)
+        self.sort_combo = QComboBox()
+        sort_presets = [
+            "文件名(升序)", "文件名(降序)",
+            "修改时间(旧→新)", "修改时间(新→旧)",
+            "文件大小(小→大)", "文件大小(大→小)",
+            "扩展名",
+        ]
+        self.sort_combo.addItems(sort_presets)
+        saved_sort = self.settings.value("sort_by", "文件名(升序)")
+        idx = self.sort_combo.findText(saved_sort)
+        self.sort_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.sort_combo.currentTextChanged.connect(self._refresh_preview)
+        sort_layout.addRow("文件排序:", self.sort_combo)
+        layout.addWidget(sort_group)
 
         rename_group = QGroupBox("分类后重命名")
         rename_layout = QVBoxLayout(rename_group)
@@ -411,7 +445,7 @@ class MainWindow(QMainWindow):
 
         about_group = QGroupBox("关于")
         about_layout = QVBoxLayout(about_group)
-        ver_label = QLabel("版本: v0.6.4")
+        ver_label = QLabel("版本: v0.6.6")
         about_layout.addWidget(ver_label)
         self.github_btn = QPushButton("打开 GitHub 仓库")
         self.github_btn.clicked.connect(self._open_github)
@@ -468,8 +502,13 @@ class MainWindow(QMainWindow):
         self.settings.setValue("dest", self.dest_edit.text())
         self.settings.setValue("group_size", self.group_size_spin.value())
         self.settings.setValue("sort_by", self.sort_combo.currentText())
-        self.settings.setValue("password", self.password_edit.text())
+        self.settings.setValue("remember_pwd", self.remember_pwd_cb.isChecked())
+        if self.remember_pwd_cb.isChecked():
+            self.settings.setValue("password", self.password_edit.text())
+        else:
+            self.settings.setValue("password", "")
         self.settings.setValue("volume", self.volume_edit.text())
+        self.settings.setValue("enable_volume", self.enable_volume_cb.isChecked())
         self.settings.setValue("keep_files", self.keep_cb.isChecked())
         self.settings.setValue("recursive", self.recursive_cb.isChecked())
         self.settings.setValue("output_list", self.output_list_cb.isChecked())
@@ -795,9 +834,18 @@ class MainWindow(QMainWindow):
                     if f.is_file():
                         folder = ext_to_folder.get(f.suffix.lower())
                         if folder:
-                            folder_files.setdefault(folder, []).append(f.name)
+                            folder_files.setdefault(folder, []).append(f)
             except Exception:
                 pass
+
+        sort_by = self.sort_combo.currentText() if hasattr(self, 'sort_combo') else '文件名(升序)'
+        sort_map = {"文件名(升序)": "name", "文件名(降序)": "name_desc",
+                     "修改时间(旧→新)": "mtime", "修改时间(新→旧)": "mtime_desc",
+                     "文件大小(小→大)": "size_asc", "文件大小(大→小)": "size_desc",
+                     "扩展名": "ext"}
+        sort_key = sort_map.get(sort_by, 'name')
+        for flist in folder_files.values():
+            _sort_files(flist, sort_key)
 
         current_tab = self.preview_tab_bar.currentIndex()
         current_folder = self.preview_tab_bar.tabText(current_tab) if current_tab >= 0 else ""
@@ -818,16 +866,16 @@ class MainWindow(QMainWindow):
         selected = self.preview_tab_bar.tabText(self.preview_tab_bar.currentIndex()) if self.preview_tab_bar.count() > 0 else ""
         if selected and selected in folder_files:
             rule = self._match_naming_rule(naming_rules, selected)
-            for i, fname in enumerate(folder_files[selected]):
+            for i, fp in enumerate(folder_files[selected]):
                 row = self.preview_table.rowCount()
                 self.preview_table.insertRow(row)
-                self.preview_table.setItem(row, 0, QTableWidgetItem(fname))
+                self.preview_table.setItem(row, 0, QTableWidgetItem(fp.name))
                 if rule:
                     new_name = render_template(rule.get('template', ''), i + 1,
-                                               Path(fname).suffix, selected, Path(fname).stem)
-                    self.preview_table.setItem(row, 1, QTableWidgetItem(new_name if new_name else fname))
+                                               fp.suffix, selected, fp.stem)
+                    self.preview_table.setItem(row, 1, QTableWidgetItem(new_name if new_name else fp.name))
                 else:
-                    self.preview_table.setItem(row, 1, QTableWidgetItem(fname))
+                    self.preview_table.setItem(row, 1, QTableWidgetItem(fp.name))
 
     def _collect_naming_rules(self):
         rules = []
@@ -856,7 +904,10 @@ class MainWindow(QMainWindow):
                 custom_names[ext_item.text().strip()] = name_item.text().strip() if name_item else ""
 
         vol = self.volume_edit.text().strip() or None
-        sort_map = {"文件名": "name", "修改时间": "mtime"}
+        sort_map = {"文件名(升序)": "name", "文件名(降序)": "name_desc",
+                     "修改时间(旧→新)": "mtime", "修改时间(新→旧)": "mtime_desc",
+                     "文件大小(小→大)": "size_asc", "文件大小(大→小)": "size_desc",
+                     "扩展名": "ext"}
 
         return {
             'src': self.src_edit.text().strip(),
@@ -864,6 +915,7 @@ class MainWindow(QMainWindow):
             'group_size': self.group_size_spin.value(),
             'password': self.password_edit.text(),
             'volume': vol,
+            'enable_volume': self.enable_volume_cb.isChecked(),
             'bandizip': 'bandizip',
             'custom_names': custom_names,
             'sort_by': sort_map.get(self.sort_combo.currentText(), 'name'),
