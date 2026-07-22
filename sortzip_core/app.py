@@ -13,7 +13,7 @@ from PySide6.QtCore import Qt, QThread, Slot, QSettings, QUrl
 from PySide6.QtGui import QIcon, QTextCursor, QDesktopServices
 
 from sortzip_core.constants import EXT_CATEGORIES, DARK_QSS, RENAME_PRESETS, validate_win_folder_name
-from sortzip_core.engine import check_naming_conflicts, render_template, _sort_files
+from sortzip_core.engine import check_naming_conflicts, render_template, _sort_files, _collect_dirs
 from sortzip_core.widgets import (
     resource_path, show_styled_dialog, show_stats_dialog,
     show_manual_dialog, show_conflict_dialog,
@@ -272,6 +272,13 @@ class MainWindow(QMainWindow):
         sort_layout.addRow("文件排序:", self.sort_combo)
         layout.addWidget(sort_group)
 
+        subfolder_group = QGroupBox("子文件夹设置")
+        subfolder_layout = QVBoxLayout(subfolder_group)
+        self.keep_hierarchy_cb = QCheckBox("保持原文件夹层级")
+        self.keep_hierarchy_cb.setChecked(self.settings.value("keep_hierarchy", False, type=bool))
+        subfolder_layout.addWidget(self.keep_hierarchy_cb)
+        layout.addWidget(subfolder_group)
+
         rename_group = QGroupBox("分类后重命名")
         rename_layout = QVBoxLayout(rename_group)
 
@@ -519,6 +526,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("archive_rename_enable", self.archive_rename_cb.isChecked())
         self.settings.setValue("archive_suffix", self.archive_suffix_edit.text())
         self.settings.setValue("archive_format", self.compress_format_combo.currentText())
+        self.settings.setValue("keep_hierarchy", self.keep_hierarchy_cb.isChecked())
         self._save_ext_state()
         self._save_naming_state()
 
@@ -928,6 +936,7 @@ class MainWindow(QMainWindow):
             'naming_rules': self._collect_naming_rules(),
             'archive_suffix': self.archive_suffix_edit.text().strip() if self.archive_rename_cb.isChecked() else '.zipp',
             'archive_format': self.compress_format_combo.currentText(),
+            'keep_hierarchy': self.keep_hierarchy_cb.isChecked(),
         }
 
     def _run(self):
@@ -1015,6 +1024,34 @@ class MainWindow(QMainWindow):
                     if conflicts:
                         show_conflict_dialog(self, match, tmpl, conflicts)
                         return
+
+        # 重复文件名检测 → 强制层级模式
+        if config.get('recursive', False) and not config.get('keep_hierarchy', False):
+            ext_to_folder = {}
+            for r in range(self.ext_table.rowCount()):
+                chk_item = self.ext_table.item(r, 0)
+                ext_item = self.ext_table.item(r, 1)
+                name_item = self.ext_table.item(r, 2)
+                if (chk_item and chk_item.checkState() == Qt.CheckState.Checked
+                        and ext_item and ext_item.text().strip()):
+                    ext_to_folder[ext_item.text().strip()] = name_item.text().strip() if name_item else ""
+            seen = {}
+            src_path = Path(config['src'])
+            iterator = src_path.rglob('*')
+            for f in iterator:
+                if f.is_file():
+                    folder = ext_to_folder.get(f.suffix.lower())
+                    if folder:
+                        key = (folder, f.name)
+                        if key in seen:
+                            show_styled_dialog(self, "重名文件检测",
+                                               f"分类「{folder}」中存在多个名为「{f.name}」的文件\n\n"
+                                               "请启用「保持原文件夹层级」选项以保留子目录结构，\n"
+                                               "避免同名文件被覆盖。",
+                                               width=380, height=200)
+                            self.run_btn.setEnabled(True)
+                            return
+                        seen[key] = True
 
         self.run_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)

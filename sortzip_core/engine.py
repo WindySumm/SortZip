@@ -1,7 +1,13 @@
+import re
 import shutil
 import subprocess
 import unicodedata
 from pathlib import Path
+
+
+def _natural_key(f):
+    parts = re.split(r'(\d+)', f.name)
+    return [int(p) if p.isdigit() else p.lower() for p in parts]
 
 
 def _check_cancel(cancel_check):
@@ -12,8 +18,8 @@ def _check_cancel(cancel_check):
 
 
 SORT_FUNCS = {
-    'name':        lambda f: f.name,
-    'name_desc':   lambda f: (0, f.name),
+    'name':        _natural_key,
+    'name_desc':   _natural_key,
     'mtime':       lambda f: f.stat().st_mtime,
     'mtime_desc':  lambda f: (-f.stat().st_mtime, f.name),
     'size_asc':    lambda f: f.stat().st_size,
@@ -30,7 +36,17 @@ def _sort_files(files, sort_by):
     files.sort(key=fn, reverse=reverse)
 
 
-def classify_files(src_dir, dest_root, custom_names=None, on_progress=None, cancel_check=None, keep_files=False, recursive=False):
+def _dedup_name(dest_dir, stem, ext):
+    name = f"{stem}{ext}"
+    counter = 0
+    while (dest_dir / name).exists():
+        counter += 1
+        name = f"{stem}_{counter}{ext}"
+    return name
+
+
+def classify_files(src_dir, dest_root, custom_names=None, on_progress=None, cancel_check=None,
+                   keep_files=False, recursive=False, keep_hierarchy=False):
     src_path = Path(src_dir)
     dest_root = Path(dest_root)
     dest_root.mkdir(parents=True, exist_ok=True)
@@ -49,14 +65,20 @@ def classify_files(src_dir, dest_root, custom_names=None, on_progress=None, canc
             continue
         else:
             folder_name = ext[1:] if ext else 'no_extension'
-        target_dir = dest_root / folder_name
-        target_dir.mkdir(exist_ok=True)
-        if keep_files:
-            shutil.copy2(str(file_path), str(target_dir / file_path.name))
-            print(f"复制: {file_path.name} -> {target_dir}")
+        if keep_hierarchy:
+            rel = file_path.relative_to(src_path)
+            target_dir = dest_root / folder_name / rel.parent
         else:
-            shutil.move(str(file_path), str(target_dir / file_path.name))
-            print(f"移动: {file_path.name} -> {target_dir}")
+            target_dir = dest_root / folder_name
+        target_dir.mkdir(parents=True, exist_ok=True)
+        dest_name = _dedup_name(target_dir, file_path.stem, file_path.suffix)
+        dest_path = target_dir / dest_name
+        if keep_files:
+            shutil.copy2(str(file_path), str(dest_path))
+            print(f"复制: {file_path.name} -> {dest_path}")
+        else:
+            shutil.move(str(file_path), str(dest_path))
+            print(f"移动: {file_path.name} -> {dest_path}")
         if on_progress:
             on_progress(idx, total, f"分类: {file_path.name}")
 
@@ -79,6 +101,24 @@ def _match_rule(naming_rules, folder_name):
         match = rule.get('match_folder', '')
         if match == '*' or match == folder_name:
             return rule
+    return None
+
+
+def _match_rule_hierarchy(naming_rules, folder, root=None):
+    """Walk up ancestors to find a matching naming rule."""
+    if not naming_rules:
+        return None
+    walk = folder
+    root = Path(root) if root else None
+    while True:
+        rule = _match_rule(naming_rules, walk.name)
+        if rule:
+            return rule
+        if root is not None and walk == root:
+            break
+        if walk.parent == walk:
+            break
+        walk = walk.parent
     return None
 
 
@@ -134,8 +174,20 @@ def _wrap_text(text, width):
 SEP = "\t"
 
 
+def _collect_dirs(root, keep_hierarchy=False):
+    root = Path(root)
+    if keep_hierarchy:
+        dirs = []
+        for f in root.rglob('*'):
+            if f.is_dir() and any(x.is_file() for x in f.iterdir()):
+                dirs.append(f)
+        return sorted(dirs, key=lambda d: d.relative_to(root))
+    else:
+        return sorted(f for f in root.iterdir() if f.is_dir())
+
+
 def write_rename_list(dest_root, naming_rules, sort_by='name', group_size=1, archive_suffix='.zip',
-                      compression_enabled=True):
+                      compression_enabled=True, keep_hierarchy=False):
     if compression_enabled:
         COL_W = (4, 24, 24, 24)
         HEADERS = ("序号", "原文件名", "新文件名", "所属压缩包名")
@@ -143,11 +195,14 @@ def write_rename_list(dest_root, naming_rules, sort_by='name', group_size=1, arc
         COL_W = (4, 24, 24)
         HEADERS = ("序号", "原文件名", "新文件名")
     dest_root = Path(dest_root)
-    for folder in sorted(f for f in dest_root.iterdir() if f.is_dir()):
+    for folder in _collect_dirs(dest_root, keep_hierarchy):
         files = [f for f in folder.iterdir() if f.is_file()]
         if not files:
             continue
-        rule = _match_rule(naming_rules, folder.name) if naming_rules else None
+        if keep_hierarchy:
+            rule = _match_rule_hierarchy(naming_rules, folder, dest_root) if naming_rules else None
+        else:
+            rule = _match_rule(naming_rules, folder.name) if naming_rules else None
         template = rule.get('template', '') if rule else ''
         _sort_files(files, sort_by)
 
@@ -193,27 +248,33 @@ def write_rename_list(dest_root, naming_rules, sort_by='name', group_size=1, arc
 
 
 def rename_files_in_folders(dest_root, sort_by='name', on_progress=None, cancel_check=None,
-                            naming_rules=None):
+                            naming_rules=None, keep_hierarchy=False):
     dest_root = Path(dest_root)
-    folders = [f for f in dest_root.iterdir() if f.is_dir()]
+    folders = _collect_dirs(dest_root, keep_hierarchy)
     done = 0
     total = 0
     for folder in folders:
-        total += len([f for f in folder.iterdir() if f.is_file()])
+        total += len([f for f in folder.iterdir() if f.is_file() and f.name != 'List.txt'])
+    folder_order = {}
     for folder in folders:
         if _check_cancel(cancel_check):
-            return
+            return None
         files = [f for f in folder.iterdir() if f.is_file() and f.name != 'List.txt']
         if not files:
             continue
-        rule = _match_rule(naming_rules, folder.name)
+        _sort_files(files, sort_by)
+        if keep_hierarchy:
+            rule = _match_rule_hierarchy(naming_rules, folder, dest_root) if naming_rules else None
+        else:
+            rule = _match_rule(naming_rules, folder.name) if naming_rules else None
         if not rule:
             print(f"跳过重命名（未匹配规则）: {folder.name}")
             done += len(files)
+            folder_order[folder] = files[:]
             continue
         template = rule.get('template', '')
-        _sort_files(files, sort_by)
         rename_map = {}
+        renamed_order = []
         for idx, file_path in enumerate(files, start=1):
             new_name = render_template(template, idx, file_path.suffix,
                                        folder.name, file_path.stem)
@@ -223,7 +284,7 @@ def rename_files_in_folders(dest_root, sort_by='name', on_progress=None, cancel_
             rename_map[file_path] = new_path
         for src, dst in rename_map.items():
             if _check_cancel(cancel_check):
-                return
+                return None
             if src == dst:
                 print(f"跳过（已命名正确）: {src.name}")
                 done += 1
@@ -240,9 +301,12 @@ def rename_files_in_folders(dest_root, sort_by='name', on_progress=None, cancel_
                 print(f"临时移动: {dst.name} -> {temp_name}")
             src.rename(dst)
             done += 1
+            renamed_order.append(dst)
             print(f"重命名: {src.name} -> {dst.name}")
             if on_progress:
                 on_progress(done, total, f"重命名: {src.name}")
+        folder_order[folder] = renamed_order
+    return folder_order
 
 
 def get_auto_volume(total_size_bytes):
@@ -265,14 +329,18 @@ def group_compress(dest_root, group_size, password, volume_size=None,
                    bandizip_path='bandizip', keep_files=False, double_compress=True,
                    auto_close=True, on_progress=None, cancel_check=None,
                    sort_by='name', archive_suffix='.zipp', first_suffix='-First',
-                   enable_volume=True):
+                   enable_volume=True, keep_hierarchy=False, folder_order=None):
     dest_root = Path(dest_root)
-    folders = [f for f in dest_root.iterdir() if f.is_dir()]
+    folders = _collect_dirs(dest_root, keep_hierarchy)
     all_groups = []
     for folder in folders:
-        files = [f for f in folder.iterdir() if f.is_file()]
-        files = [f for f in files if f.suffix.lower() != '.zip' and f.name != 'List.txt']
-        _sort_files(files, sort_by)
+        if folder_order and folder in folder_order:
+            files = folder_order[folder]
+            files = [f for f in files if f.exists() and f.suffix.lower() != '.zip' and f.name != 'List.txt']
+        else:
+            files = [f for f in folder.iterdir() if f.is_file()]
+            files = [f for f in files if f.suffix.lower() != '.zip' and f.name != 'List.txt']
+            _sort_files(files, sort_by)
         for i in range(0, len(files), group_size):
             all_groups.append((folder, files[i:i+group_size], i))
     total = len(all_groups)
@@ -299,9 +367,9 @@ def group_compress(dest_root, group_size, password, volume_size=None,
         cmd = [bandizip_path, 'a']
         if password:
             cmd.extend(['-p:' + password])
-        if volume_size:
+        if enable_volume and volume_size:
             cmd.extend(['-v:' + volume_size])
-        elif auto_vol:
+        elif enable_volume and auto_vol:
             cmd.extend(['-v:' + auto_vol])
         if auto_close:
             cmd.append('-y')
@@ -315,8 +383,11 @@ def group_compress(dest_root, group_size, password, volume_size=None,
             print(f"成功创建分卷: {zip_path} (及其分卷)")
             if not keep_files:
                 for f in group:
-                    f.unlink()
-                    print(f"已删除原始文件: {f}")
+                    try:
+                        f.unlink()
+                        print(f"已删除原始文件: {f}")
+                    except OSError as e:
+                        print(f"警告: 无法删除 {f}: {e}")
         except subprocess.CalledProcessError as e:
             print(f"第一次压缩失败: {e.stderr}")
             continue
@@ -377,11 +448,13 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
     print(f"二次打包: {'开启' if config.get('double_compress', True) else '关闭'}")
     print(f"自动关闭窗口: {'开启' if config.get('auto_close', True) else '关闭'}")
     print(f"一次压缩: {'开启' if config.get('first_compress', True) else '关闭'}")
+    print(f"保持文件夹层级: {'开启' if config.get('keep_hierarchy', False) else '关闭'}")
     print("=" * 40)
     src = config['src']
     dest = config['dest']
     custom_names = config.get('custom_names', {})
     naming_rules = config.get('naming_rules', None)
+    keep_hierarchy = config.get('keep_hierarchy', False)
     if _check_cancel(cancel_check):
         return
     print("开始文件分类...")
@@ -389,7 +462,8 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
                    on_progress=lambda c, t, m: on_progress(0, 30, c, t, m) if on_progress else None,
                    cancel_check=cancel_check,
                    keep_files=config.get('keep_files', False),
-                   recursive=config.get('recursive', False))
+                   recursive=config.get('recursive', False),
+                   keep_hierarchy=keep_hierarchy)
     print("分类完成。")
     if _check_cancel(cancel_check):
         return
@@ -397,12 +471,14 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
         print("输出命名对照表...")
         write_rename_list(dest, naming_rules, config.get('sort_by', 'name'),
                           config.get('group_size', 1), config.get('archive_suffix', '.zip'),
-                          compression_enabled=config.get('first_compress', True))
+                          compression_enabled=config.get('first_compress', True),
+                          keep_hierarchy=keep_hierarchy)
     print("开始重命名...")
-    rename_files_in_folders(dest, config['sort_by'],
+    folder_order = rename_files_in_folders(dest, config['sort_by'],
                             on_progress=lambda c, t, m: on_progress(30, 40, c, t, m) if on_progress else None,
                             cancel_check=cancel_check,
-                            naming_rules=naming_rules)
+                            naming_rules=naming_rules,
+                            keep_hierarchy=keep_hierarchy)
     print("重命名完成。")
     if _check_cancel(cancel_check):
         return
@@ -424,6 +500,8 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
             archive_suffix=config.get('archive_suffix', '.zipp'),
             first_suffix=first_suffix,
             enable_volume=config.get('enable_volume', True),
+            keep_hierarchy=keep_hierarchy,
+            folder_order=folder_order,
         )
         print("所有任务完成！")
     else:
