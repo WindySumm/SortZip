@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
     QTextBrowser,
 )
-from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot
+from PySide6.QtCore import Qt, QObject, Signal, Slot
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 
 from sortzip_core.engine import main_from_config

@@ -4,6 +4,8 @@ import subprocess
 import unicodedata
 from pathlib import Path
 
+SEP = "\t"
+
 
 def _natural_key(f):
     parts = re.split(r'(\d+)', f.name)
@@ -169,9 +171,6 @@ def _wrap_text(text, width):
                 remaining = remaining[take:]
                 break
     return chunks
-
-
-SEP = "\t"
 
 
 def _collect_dirs(root, keep_hierarchy=False):
@@ -430,7 +429,7 @@ def group_compress(dest_root, group_size, password, volume_size=None,
             print("跳过二次打包（已关闭）")
 
 
-def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None):
+def main_from_config(config, on_progress=None, cancel_check=None):
     print("=== 使用配置参数运行 ===")
     print(f"源文件夹: {config['src']}")
     print(f"目标根目录: {config['dest']}")
@@ -509,22 +508,21 @@ def main_from_config(config, on_progress=None, cancel_check=None, on_stats=None)
 
 
 def cli():
-    CONFIG = {
-        'src': r'E:\测试文件夹',
-        'dest': r'E:\测试输出',
-        'group_size': 4,
-        'password': '12345678',
+    main_from_config({
+        'src': r'',
+        'dest': r'',
+        'group_size': 1,
+        'password': '',
         'volume': None,
         'bandizip': 'bandizip',
-        'custom_names': {'.txt': '文档'},
+        'custom_names': {},
         'sort_by': 'name',
         'keep_files': False,
-        'double_compress': True,
-        'first_compress': True,
-        'enable_volume': True,
+        'double_compress': False,
+        'first_compress': False,
+        'enable_volume': False,
         'auto_close': True,
-    }
-    main_from_config(CONFIG)
+    })
 
 
 if __name__ == '__main__':

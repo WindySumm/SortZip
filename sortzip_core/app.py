@@ -13,12 +13,21 @@ from PySide6.QtCore import Qt, QThread, Slot, QSettings, QUrl
 from PySide6.QtGui import QIcon, QTextCursor, QDesktopServices
 
 from sortzip_core.constants import EXT_CATEGORIES, DARK_QSS, RENAME_PRESETS, validate_win_folder_name
-from sortzip_core.engine import check_naming_conflicts, render_template, _sort_files, _collect_dirs
+from sortzip_core.engine import _match_rule, check_naming_conflicts, render_template, _sort_files
+from sortzip_core import __version__
 from sortzip_core.widgets import (
     resource_path, show_styled_dialog, show_stats_dialog,
     show_manual_dialog, show_conflict_dialog,
     DropLineEdit, Worker,
 )
+
+
+SORT_MAP = {
+    "文件名(升序)": "name", "文件名(降序)": "name_desc",
+    "修改时间(旧→新)": "mtime", "修改时间(新→旧)": "mtime_desc",
+    "文件大小(小→大)": "size_asc", "文件大小(大→小)": "size_desc",
+    "扩展名": "ext",
+}
 
 
 class MainWindow(QMainWindow):
@@ -452,7 +461,7 @@ class MainWindow(QMainWindow):
 
         about_group = QGroupBox("关于")
         about_layout = QVBoxLayout(about_group)
-        ver_label = QLabel("版本: v0.6.6")
+        ver_label = QLabel(f"版本: {__version__}")
         about_layout.addWidget(ver_label)
         self.github_btn = QPushButton("打开 GitHub 仓库")
         self.github_btn.clicked.connect(self._open_github)
@@ -811,17 +820,6 @@ class MainWindow(QMainWindow):
         if checked and not self.first_cb.isChecked():
             self.first_cb.setChecked(True)
 
-    def _match_naming_rule(self, rules, folder_name):
-        if not rules:
-            return None
-        for rule in rules:
-            if not rule.get('enable', True):
-                continue
-            match = rule.get('match_folder', '')
-            if match == '*' or match == folder_name:
-                return rule
-        return None
-
     def _refresh_preview(self):
         src_path = self.src_edit.text().strip()
         ext_to_folder = {}
@@ -847,11 +845,7 @@ class MainWindow(QMainWindow):
                 pass
 
         sort_by = self.sort_combo.currentText() if hasattr(self, 'sort_combo') else '文件名(升序)'
-        sort_map = {"文件名(升序)": "name", "文件名(降序)": "name_desc",
-                     "修改时间(旧→新)": "mtime", "修改时间(新→旧)": "mtime_desc",
-                     "文件大小(小→大)": "size_asc", "文件大小(大→小)": "size_desc",
-                     "扩展名": "ext"}
-        sort_key = sort_map.get(sort_by, 'name')
+        sort_key = SORT_MAP.get(sort_by, 'name')
         for flist in folder_files.values():
             _sort_files(flist, sort_key)
 
@@ -873,7 +867,7 @@ class MainWindow(QMainWindow):
         self.preview_table.setRowCount(0)
         selected = self.preview_tab_bar.tabText(self.preview_tab_bar.currentIndex()) if self.preview_tab_bar.count() > 0 else ""
         if selected and selected in folder_files:
-            rule = self._match_naming_rule(naming_rules, selected)
+            rule = _match_rule(naming_rules, selected)
             for i, fp in enumerate(folder_files[selected]):
                 row = self.preview_table.rowCount()
                 self.preview_table.insertRow(row)
@@ -912,10 +906,6 @@ class MainWindow(QMainWindow):
                 custom_names[ext_item.text().strip()] = name_item.text().strip() if name_item else ""
 
         vol = self.volume_edit.text().strip() or None
-        sort_map = {"文件名(升序)": "name", "文件名(降序)": "name_desc",
-                     "修改时间(旧→新)": "mtime", "修改时间(新→旧)": "mtime_desc",
-                     "文件大小(小→大)": "size_asc", "文件大小(大→小)": "size_desc",
-                     "扩展名": "ext"}
 
         return {
             'src': self.src_edit.text().strip(),
@@ -926,7 +916,7 @@ class MainWindow(QMainWindow):
             'enable_volume': self.enable_volume_cb.isChecked(),
             'bandizip': 'bandizip',
             'custom_names': custom_names,
-            'sort_by': sort_map.get(self.sort_combo.currentText(), 'name'),
+            'sort_by': SORT_MAP.get(self.sort_combo.currentText(), 'name'),
             'keep_files': self.keep_cb.isChecked(),
             'recursive': self.recursive_cb.isChecked(),
             'output_list': self.output_list_cb.isChecked(),

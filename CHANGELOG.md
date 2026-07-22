@@ -22,6 +22,16 @@
 - **`-v:` 分卷参数受 `enable_volume` 控制**：未勾选「启用分卷」时不再传递 `-v:` 参数，即使分卷大小输入框有内容
 - **修复 `_match_rule` 子文件夹不匹配命名规则**：层级模式下子文件夹名（如 `sub`）无法匹配以祖先文件夹名为 match_folder 的规则，改用 `_match_rule_hierarchy` 逐级查找
 
+### 🔧 代码清理
+
+- **版本号统一**：`app.py` 关于面板版本号改为引用 `__init__.py` 的 `__version__`（`v0.6.6` → `v0.6.8`）
+- **删除未使用 import**：`app.py` 的 `_collect_dirs`、`widgets.py` 的 `QThread`、`SortZip.py` 的 `main_from_config`
+- **删除死参数**：`main_from_config` 的 `on_stats` 参数（从未使用）
+- **消除重复代码**：`app.py` 的 `_match_naming_rule` 与 `engine._match_rule` 逻辑完全一致，删除并统一导入
+- **`sort_map` 常量化**：两处重复定义的 `sort_map` 字典提取为模块级 `SORT_MAP` 常量
+- **`SEP` 移至模块顶部**：从函数群中间提到 `import` 之后
+- **清理硬编码测试数据**：`cli()` 和 `SortZip.py` 中的开发路径和测试密码
+
 ---
 
 ## v0.6.7 (2026-07-22)
