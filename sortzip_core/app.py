@@ -660,6 +660,10 @@ class MainWindow(QMainWindow):
         self.confirm_config_cb.setChecked(True)
         self.verify_cb.setChecked(False)
         self.ext_table.setRowCount(0)
+        for chk in self._ext_pickers.values():
+            chk.blockSignals(True)
+            chk.setChecked(False)
+            chk.blockSignals(False)
         self.naming_table.setRowCount(0)
         self._toggle_theme()
         show_styled_dialog(self, "已还原", "所有设置已恢复为默认值。", width=280, height=150)
