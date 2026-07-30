@@ -3,7 +3,7 @@ import sys
 
 from PySide6.QtWidgets import (
     QLineEdit, QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
-    QTextBrowser,
+    QTextBrowser, QTableWidget, QHeaderView,
 )
 from PySide6.QtCore import Qt, QObject, Signal, Slot
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
@@ -100,6 +100,40 @@ def show_conflict_dialog(parent, folder_name, template, conflicts):
            f"{lines}\n\n"
            f"请调整命名模板")
     show_styled_dialog(parent, "命名冲突", msg, width=380, height=220)
+
+
+class ReorderableTable(QTableWidget):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setDragDropMode(QTableWidget.DragDrop.InternalMove)
+        self.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+
+    def dropEvent(self, event):
+        if event.source() != self or not self.selectedIndexes():
+            super().dropEvent(event)
+            return
+        drag_row = self.selectedIndexes()[0].row()
+        drop_pos = self.indexAt(event.position().toPoint())
+        if not drop_pos.isValid():
+            super().dropEvent(event)
+            return
+        drop_row = drop_pos.row()
+        if drag_row == drop_row:
+            event.accept()
+            return
+        row_data = []
+        for col in range(self.columnCount()):
+            item = self.takeItem(drag_row, col)
+            row_data.append(item)
+        self.removeRow(drag_row)
+        insert_row = drop_row if drop_row < drag_row else drop_row
+        self.insertRow(insert_row)
+        for col, item in enumerate(row_data):
+            self.setItem(insert_row, col, item)
+        event.accept()
 
 
 class DropLineEdit(QLineEdit):

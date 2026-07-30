@@ -18,7 +18,7 @@ from sortzip_core import __version__
 from sortzip_core.widgets import (
     resource_path, show_styled_dialog, show_stats_dialog,
     show_manual_dialog, show_conflict_dialog,
-    DropLineEdit, Worker,
+    ReorderableTable, DropLineEdit, Worker,
 )
 
 
@@ -224,7 +224,7 @@ class MainWindow(QMainWindow):
         volume_layout.addRow("分卷大小:", self.volume_edit)
 
         self.enable_volume_cb = QCheckBox("启用分卷")
-        self.enable_volume_cb.setChecked(self.settings.value("enable_volume", True, type=bool))
+        self.enable_volume_cb.setChecked(self.settings.value("enable_volume", False, type=bool))
         volume_layout.addRow("", self.enable_volume_cb)
 
         layout.addWidget(volume_group)
@@ -241,7 +241,7 @@ class MainWindow(QMainWindow):
         enabled_group = QGroupBox("已启用映射")
         enabled_layout = QVBoxLayout(enabled_group)
 
-        self.ext_table = QTableWidget(0, 3)
+        self.ext_table = ReorderableTable(0, 3)
         self.ext_table.setHorizontalHeaderLabels(["启用", "扩展名", "文件夹名"])
         self.ext_table.setMinimumHeight(100)
         self.ext_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -250,11 +250,6 @@ class MainWindow(QMainWindow):
         self.ext_table.horizontalHeader().setStretchLastSection(False)
         self.ext_table.cellChanged.connect(self._on_table_cell_changed)
         self.ext_table.cellPressed.connect(self._on_ext_cell_pressed)
-        self.ext_table.setDragDropMode(QTableWidget.DragDrop.InternalMove)
-        self.ext_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.ext_table.setDragEnabled(True)
-        self.ext_table.setAcceptDrops(True)
-        self.ext_table.setDropIndicatorShown(True)
         self._edit_old_folder_name = ""
         enabled_layout.addWidget(self.ext_table, 1)
 
@@ -331,7 +326,7 @@ class MainWindow(QMainWindow):
         rename_group = QGroupBox("分类后重命名")
         rename_layout = QVBoxLayout(rename_group)
 
-        self.naming_table = QTableWidget(0, 3)
+        self.naming_table = ReorderableTable(0, 3)
         self.naming_table.setHorizontalHeaderLabels(["启用", "匹配文件夹", "命名模板"])
         self.naming_table.setMinimumHeight(120)
         self.naming_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -339,11 +334,6 @@ class MainWindow(QMainWindow):
         self.naming_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.naming_table.cellChanged.connect(self._on_naming_cell_changed)
         self.naming_table.itemChanged.connect(self._on_naming_item_changed)
-        self.naming_table.setDragDropMode(QTableWidget.DragDrop.InternalMove)
-        self.naming_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.naming_table.setDragEnabled(True)
-        self.naming_table.setAcceptDrops(True)
-        self.naming_table.setDropIndicatorShown(True)
         rename_layout.addWidget(self.naming_table, 1)
 
         naming_btn_row = QHBoxLayout()
@@ -645,7 +635,7 @@ class MainWindow(QMainWindow):
         self.recursive_cb.setChecked(False)
         self.group_size_spin.setValue(1)
         self.volume_edit.clear()
-        self.enable_volume_cb.setChecked(True)
+        self.enable_volume_cb.setChecked(False)
         self.sort_combo.setCurrentIndex(0)
         self.keep_hierarchy_cb.setChecked(False)
         self.archive_rename_cb.setChecked(False)
@@ -1092,7 +1082,7 @@ class MainWindow(QMainWindow):
 
     def _confirm_config(self, config):
         vol_text = config.get('volume') or '自动'
-        vol_enabled = "✔ 启用" if config.get('enable_volume', True) else "✘ 禁用"
+        vol_enabled = "✔ 启用" if config.get('enable_volume', False) else "✘ 禁用"
         hier = "✔ 开启" if config.get('keep_hierarchy', False) else "✘ 关闭"
         keep = "✔ 保留" if config.get('keep_files', False) else "✘ 不保留"
         out = "✔ 生成" if config.get('output_list', False) else "✘ 不生成"
