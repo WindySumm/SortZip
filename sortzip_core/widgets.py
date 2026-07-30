@@ -3,7 +3,7 @@ import sys
 
 from PySide6.QtWidgets import (
     QLineEdit, QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
-    QTextBrowser, QTableWidget, QHeaderView,
+    QTextBrowser, QTableWidget,
 )
 from PySide6.QtCore import Qt, QObject, Signal, Slot
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
