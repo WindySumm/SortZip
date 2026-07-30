@@ -314,7 +314,7 @@ class MainWindow(QMainWindow):
         saved_sort = self.settings.value("sort_by", "文件名(升序)")
         idx = self.sort_combo.findText(saved_sort)
         self.sort_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        self.sort_combo.currentTextChanged.connect(lambda: (self._preview_order.clear(), self._refresh_preview()))
+        self.sort_combo.activated.connect(lambda: (self._preview_order.clear(), self._refresh_preview()))
         sort_layout.addRow("文件排序:", self.sort_combo)
         layout.addWidget(sort_group)
 
