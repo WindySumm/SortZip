@@ -962,9 +962,29 @@ class MainWindow(QMainWindow):
             ("输出 List.txt", out),
         ]
 
+        # 文件包含情况检查
+        custom_names = config.get('custom_names', {})
+        src = config.get('src', '')
+        include_info = None
+        if custom_names and src and os.path.isdir(src):
+            recursive = config.get('recursive', False)
+            iterator = Path(src).rglob('*') if recursive else Path(src).iterdir()
+            all_files = [f for f in iterator if f.is_file()]
+            total = len(all_files)
+            checked_exts = set(custom_names.keys())
+            excluded = [f for f in all_files if f.suffix.lower() not in checked_exts]
+            excluded_count = len(excluded)
+            if excluded_count == 0:
+                include_info = f"✔ 已包含文件夹内全部 {total} 个文件"
+            else:
+                sample = excluded[:5]
+                names = "、".join(f.name for f in sample)
+                suffix = "…" if excluded_count > 5 else ""
+                include_info = f"⚠ 已勾选扩展名未覆盖全部文件（{total} 个中 {excluded_count} 个未匹配）\n例如：{names}{suffix}"
+
         dlg = QDialog(self)
         dlg.setWindowTitle("参数确认")
-        dlg.setFixedSize(420, 380)
+        dlg.setFixedSize(460, 420)
         layout = QVBoxLayout(dlg)
         layout.setSpacing(8)
 
@@ -981,6 +1001,17 @@ class MainWindow(QMainWindow):
             v.setStyleSheet("color: #0078d4; font-weight: bold;")
             form.addRow(QLabel(label + "："), v)
         layout.addLayout(form)
+
+        if include_info:
+            layout.addSpacing(4)
+            info_label = QLabel(include_info)
+            info_label.setWordWrap(True)
+            info_label.setStyleSheet(
+                "background: #2d2d2d; color: #ffcc00; padding: 8px 12px;"
+                " border-radius: 4px; font-size: 12px;"
+            )
+            layout.addWidget(info_label)
+
         layout.addStretch()
 
         btn_layout = QHBoxLayout()
