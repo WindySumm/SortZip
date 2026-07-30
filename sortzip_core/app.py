@@ -1092,6 +1092,7 @@ class MainWindow(QMainWindow):
         hier = "✔ 开启" if config.get('keep_hierarchy', False) else "✘ 关闭"
         keep = "✔ 保留" if config.get('keep_files', False) else "✘ 不保留"
         out = "✔ 生成" if config.get('output_list', False) else "✘ 不生成"
+        ver = "✔ 开启" if config.get('verify_archive', False) else "✘ 关闭"
 
         fc = config.get('first_compress', True)
         dc = config.get('double_compress', True)
@@ -1109,6 +1110,7 @@ class MainWindow(QMainWindow):
             ("保持原文件夹层级", hier),
             ("保留原始文件", keep),
             ("输出 List.txt", out),
+            ("压缩后校验完整性", ver),
         ]
 
         # 文件包含情况检查
