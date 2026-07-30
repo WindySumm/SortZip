@@ -67,6 +67,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("SortZip", "SortZip")
         self.thread = None
         self.worker = None
+        self._preview_order = {}
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -313,7 +314,7 @@ class MainWindow(QMainWindow):
         saved_sort = self.settings.value("sort_by", "文件名(升序)")
         idx = self.sort_combo.findText(saved_sort)
         self.sort_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        self.sort_combo.currentTextChanged.connect(self._refresh_preview)
+        self.sort_combo.currentTextChanged.connect(lambda: (self._preview_order.clear(), self._refresh_preview()))
         sort_layout.addRow("文件排序:", self.sort_combo)
         layout.addWidget(sort_group)
 
@@ -363,12 +364,13 @@ class MainWindow(QMainWindow):
         self.preview_tab_bar.setExpanding(False)
         self.preview_tab_bar.currentChanged.connect(self._on_preview_tab_changed)
         preview_layout.addWidget(self.preview_tab_bar)
-        self.preview_table = QTableWidget(0, 2)
+        self.preview_table = ReorderableTable(0, 2)
         self.preview_table.setHorizontalHeaderLabels(["命名前", "命名后"])
         self.preview_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.preview_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.preview_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.preview_table.setMinimumHeight(160)
+        self.preview_table.rowsReordered.connect(self._on_preview_reordered)
         preview_layout.addWidget(self.preview_table)
         layout.addWidget(preview_group)
 
@@ -996,10 +998,22 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+        # 清理已不存在的文件夹的排序记录
+        self._preview_order = {k: v for k, v in self._preview_order.items() if k in folder_files}
+
         sort_by = self.sort_combo.currentText() if hasattr(self, 'sort_combo') else '文件名(升序)'
         sort_key = SORT_MAP.get(sort_by, 'name')
         for flist in folder_files.values():
             _sort_files(flist, sort_key)
+
+        # 应用手动拖拽排序
+        for folder, flist in folder_files.items():
+            if folder in self._preview_order:
+                ordered = self._preview_order[folder]
+                name_map = {f.name: f for f in flist}
+                reordered = [name_map[n] for n in ordered if n in name_map]
+                reordered += [f for f in flist if f.name not in ordered]
+                folder_files[folder] = reordered
 
         current_tab = self.preview_tab_bar.currentIndex()
         current_folder = self.preview_tab_bar.tabText(current_tab) if current_tab >= 0 else ""
@@ -1030,6 +1044,17 @@ class MainWindow(QMainWindow):
                     self.preview_table.setItem(row, 1, QTableWidgetItem(new_name if new_name else fp.name))
                 else:
                     self.preview_table.setItem(row, 1, QTableWidgetItem(fp.name))
+
+    def _on_preview_reordered(self):
+        selected = self.preview_tab_bar.tabText(self.preview_tab_bar.currentIndex()) if self.preview_tab_bar.count() > 0 else ""
+        if not selected:
+            return
+        names = []
+        for r in range(self.preview_table.rowCount()):
+            item = self.preview_table.item(r, 0)
+            if item:
+                names.append(item.text())
+        self._preview_order[selected] = names
 
     def _collect_naming_rules(self):
         rules = []
@@ -1080,6 +1105,7 @@ class MainWindow(QMainWindow):
             'archive_format': self.compress_format_combo.currentText(),
             'keep_hierarchy': self.keep_hierarchy_cb.isChecked(),
             'verify_archive': self.verify_cb.isChecked(),
+            'preview_order': dict(self._preview_order),
         }
 
     def _confirm_config(self, config):

@@ -247,7 +247,7 @@ def write_rename_list(dest_root, naming_rules, sort_by='name', group_size=1, arc
 
 
 def rename_files_in_folders(dest_root, sort_by='name', on_progress=None, cancel_check=None,
-                            naming_rules=None, keep_hierarchy=False):
+                            naming_rules=None, keep_hierarchy=False, preview_order=None):
     dest_root = Path(dest_root)
     folders = _collect_dirs(dest_root, keep_hierarchy)
     done = 0
@@ -261,7 +261,13 @@ def rename_files_in_folders(dest_root, sort_by='name', on_progress=None, cancel_
         files = [f for f in folder.iterdir() if f.is_file() and f.name != 'List.txt']
         if not files:
             continue
-        _sort_files(files, sort_by)
+        if preview_order and folder.name in preview_order:
+            ordered = preview_order[folder.name]
+            name_map = {f.name: f for f in files}
+            files = [name_map[n] for n in ordered if n in name_map]
+            files += [f for f in files if f.name not in ordered]
+        else:
+            _sort_files(files, sort_by)
         if keep_hierarchy:
             rule = _match_rule_hierarchy(naming_rules, folder, dest_root) if naming_rules else None
         else:
@@ -499,7 +505,8 @@ def main_from_config(config, on_progress=None, cancel_check=None):
                             on_progress=lambda c, t, m: on_progress(30, 40, c, t, m) if on_progress else None,
                             cancel_check=cancel_check,
                             naming_rules=naming_rules,
-                            keep_hierarchy=keep_hierarchy)
+                            keep_hierarchy=keep_hierarchy,
+                            preview_order=config.get('preview_order'))
     print("重命名完成。")
     if _check_cancel(cancel_check):
         return
