@@ -864,7 +864,7 @@ class MainWindow(QMainWindow):
         if col == 0:
             chk_item = self.ext_table.item(row, 0)
             ext_item = self.ext_table.item(row, 1)
-            if not ext_item:
+            if not chk_item or not ext_item:
                 return
             ext = ext_item.text().strip()
             checked = chk_item and chk_item.checkState() == Qt.CheckState.Checked
