@@ -250,6 +250,11 @@ class MainWindow(QMainWindow):
         self.ext_table.horizontalHeader().setStretchLastSection(False)
         self.ext_table.cellChanged.connect(self._on_table_cell_changed)
         self.ext_table.cellPressed.connect(self._on_ext_cell_pressed)
+        self.ext_table.setDragDropMode(QTableWidget.DragDrop.InternalMove)
+        self.ext_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.ext_table.setDragEnabled(True)
+        self.ext_table.setAcceptDrops(True)
+        self.ext_table.setDropIndicatorShown(True)
         self._edit_old_folder_name = ""
         enabled_layout.addWidget(self.ext_table, 1)
 
@@ -334,6 +339,11 @@ class MainWindow(QMainWindow):
         self.naming_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.naming_table.cellChanged.connect(self._on_naming_cell_changed)
         self.naming_table.itemChanged.connect(self._on_naming_item_changed)
+        self.naming_table.setDragDropMode(QTableWidget.DragDrop.InternalMove)
+        self.naming_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.naming_table.setDragEnabled(True)
+        self.naming_table.setAcceptDrops(True)
+        self.naming_table.setDropIndicatorShown(True)
         rename_layout.addWidget(self.naming_table, 1)
 
         naming_btn_row = QHBoxLayout()
@@ -425,6 +435,10 @@ class MainWindow(QMainWindow):
         fmt_row.addWidget(self.compress_format_combo)
         fmt_row.addStretch()
         compress_layout.addLayout(fmt_row)
+
+        self.verify_cb = QCheckBox("压缩后校验完整性")
+        self.verify_cb.setChecked(self.settings.value("verify_archive", False, type=bool))
+        compress_layout.addWidget(self.verify_cb)
 
         layout.addWidget(compress_group)
 
@@ -644,6 +658,7 @@ class MainWindow(QMainWindow):
         self.auto_close_cb.setChecked(True)
         self.dark_mode_cb.setChecked(False)
         self.confirm_config_cb.setChecked(True)
+        self.verify_cb.setChecked(False)
         self.ext_table.setRowCount(0)
         self.naming_table.setRowCount(0)
         self._toggle_theme()
@@ -676,6 +691,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("archive_format", self.compress_format_combo.currentText())
         self.settings.setValue("keep_hierarchy", self.keep_hierarchy_cb.isChecked())
         self.settings.setValue("confirm_config", self.confirm_config_cb.isChecked())
+        self.settings.setValue("verify_archive", self.verify_cb.isChecked())
         self._save_ext_state()
         self._save_naming_state()
 
@@ -1067,6 +1083,7 @@ class MainWindow(QMainWindow):
             'archive_suffix': self.archive_suffix_edit.text().strip() if self.archive_rename_cb.isChecked() else '.zipp',
             'archive_format': self.compress_format_combo.currentText(),
             'keep_hierarchy': self.keep_hierarchy_cb.isChecked(),
+            'verify_archive': self.verify_cb.isChecked(),
         }
 
     def _confirm_config(self, config):

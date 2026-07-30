@@ -328,7 +328,8 @@ def group_compress(dest_root, group_size, password, volume_size=None,
                    bandizip_path='bandizip', keep_files=False, double_compress=True,
                    auto_close=True, on_progress=None, cancel_check=None,
                    sort_by='name', archive_suffix='.zipp', first_suffix='-First',
-                   enable_volume=True, keep_hierarchy=False, folder_order=None):
+                   enable_volume=True, keep_hierarchy=False, folder_order=None,
+                   verify=False):
     dest_root = Path(dest_root)
     folders = _collect_dirs(dest_root, keep_hierarchy)
     all_groups = []
@@ -428,6 +429,27 @@ def group_compress(dest_root, group_size, password, volume_size=None,
         else:
             print("跳过二次打包（已关闭）")
 
+    if verify:
+        print("\n开始校验压缩包完整性...")
+        for folder in _collect_dirs(dest_root, keep_hierarchy):
+            archives = [f for f in folder.iterdir() if f.is_file() and f.suffix.lower() in ('.zip', '.7z', '.rar', '.tar', '.gz', '.bz2', '.xz', '.lzh', '.alz', '.egg', '.zipp')]
+            for arch in archives:
+                if _check_cancel(cancel_check):
+                    return
+                test_cmd = [bandizip_path, 't', str(arch)]
+                if auto_close:
+                    test_cmd.append('-y')
+                print(f"校验: {arch.name}")
+                try:
+                    subprocess.run(test_cmd, check=True, capture_output=True, text=True)
+                    print(f"  ✔ {arch.name} 校验通过")
+                except subprocess.CalledProcessError:
+                    print(f"  ✘ {arch.name} 校验失败，文件可能已损坏")
+                except FileNotFoundError:
+                    print(f"  ✘ 找不到 Bandizip，无法校验")
+                    return
+        print("校验完成。")
+
 
 def main_from_config(config, on_progress=None, cancel_check=None):
     print("=== 使用配置参数运行 ===")
@@ -501,6 +523,7 @@ def main_from_config(config, on_progress=None, cancel_check=None):
             enable_volume=config.get('enable_volume', True),
             keep_hierarchy=keep_hierarchy,
             folder_order=folder_order,
+            verify=config.get('verify_archive', False),
         )
         print("所有任务完成！")
     else:
