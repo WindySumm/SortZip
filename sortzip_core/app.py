@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QHeaderView, QLabel, QFileDialog, QScrollArea, QGridLayout,
     QStackedWidget, QTabBar, QDialog,
 )
-from PySide6.QtCore import Qt, QThread, Slot, Signal, QSettings, QUrl
+from PySide6.QtCore import Qt, QThread, Slot, Signal, QTimer, QSettings, QUrl
 from PySide6.QtGui import QIcon, QTextCursor, QDesktopServices
 
 from sortzip_core.constants import EXT_CATEGORIES, DARK_QSS, RENAME_PRESETS, validate_win_folder_name
@@ -1055,6 +1055,7 @@ class MainWindow(QMainWindow):
             if item:
                 names.append(item.text())
         self._preview_order[selected] = names
+        QTimer.singleShot(0, self._refresh_preview)
 
     def _collect_naming_rules(self):
         rules = []
