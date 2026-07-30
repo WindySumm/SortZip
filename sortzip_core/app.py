@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QHeaderView, QLabel, QFileDialog, QScrollArea, QGridLayout,
     QStackedWidget, QTabBar, QDialog,
 )
-from PySide6.QtCore import Qt, QThread, Slot, QSettings, QUrl
+from PySide6.QtCore import Qt, QThread, Slot, Signal, QSettings, QUrl
 from PySide6.QtGui import QIcon, QTextCursor, QDesktopServices
 
 from sortzip_core.constants import EXT_CATEGORIES, DARK_QSS, RENAME_PRESETS, validate_win_folder_name
@@ -28,6 +28,31 @@ SORT_MAP = {
     "文件大小(小→大)": "size_asc", "文件大小(大→小)": "size_desc",
     "扩展名": "ext",
 }
+
+
+class UpdateChecker(QThread):
+    check_done = Signal(str)
+
+    def run(self):
+        try:
+            import json
+            import urllib.request
+            url = "https://api.github.com/repos/WindySumm/SortZip/releases/latest"
+            req = urllib.request.Request(url, headers={"User-Agent": "SortZip"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+                self.check_done.emit(data.get("tag_name", ""))
+        except Exception:
+            self.check_done.emit("")
+
+
+def _compare_versions(v1, v2):
+    try:
+        def parse(v):
+            return tuple(int(x) for x in v.lstrip("vV").split("."))
+        return parse(v1) > parse(v2)
+    except Exception:
+        return False
 
 
 class MainWindow(QMainWindow):
@@ -112,6 +137,16 @@ class MainWindow(QMainWindow):
         self.naming_del_btn.clicked.connect(self._del_naming_row)
         self.run_btn.clicked.connect(self._run)
         self.cancel_btn.clicked.connect(self._cancel)
+
+        # 恢复窗口位置/尺寸
+        geo = self.settings.value("window_geometry")
+        if geo:
+            self.restoreGeometry(geo)
+
+        # 启动更新检查
+        self._update_checker = UpdateChecker()
+        self._update_checker.check_done.connect(self._on_update_result)
+        self._update_checker.start()
 
     # ==================== 页面构建 ====================
 
@@ -466,6 +501,14 @@ class MainWindow(QMainWindow):
         manual_layout.addWidget(self.manual_btn)
         layout.addWidget(manual_group)
 
+        reset_group = QGroupBox("恢复")
+        reset_layout = QVBoxLayout(reset_group)
+        self.reset_btn = QPushButton("还原默认设置")
+        self.reset_btn.setStyleSheet("color: #d43b3b;")
+        self.reset_btn.clicked.connect(self._reset_defaults)
+        reset_layout.addWidget(self.reset_btn)
+        layout.addWidget(reset_group)
+
         about_group = QGroupBox("关于")
         about_layout = QVBoxLayout(about_group)
         ver_label = QLabel(f"版本: {__version__}")
@@ -518,9 +561,98 @@ class MainWindow(QMainWindow):
     def _open_github(self):
         QDesktopServices.openUrl(QUrl("https://github.com/WindySumm/SortZip"))
 
+    def _on_update_result(self, latest_tag):
+        if latest_tag and _compare_versions(latest_tag, __version__):
+            dlg = QDialog(self)
+            dlg.setWindowTitle("发现新版本")
+            dlg.setFixedSize(340, 180)
+            layout = QVBoxLayout(dlg)
+            layout.setSpacing(10)
+            title = QLabel("发现新版本")
+            title.setStyleSheet("font-size: 14px; font-weight: bold;")
+            title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(title)
+            layout.addSpacing(4)
+            msg = QLabel(
+                f"当前版本：{__version__}\n"
+                f"最新版本：{latest_tag}\n\n"
+                "是否前往 GitHub 仓库下载更新？"
+            )
+            msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(msg)
+            layout.addStretch()
+            btn_row = QHBoxLayout()
+            skip_btn = QPushButton("忽略")
+            skip_btn.clicked.connect(dlg.reject)
+            go_btn = QPushButton("前往下载")
+            go_btn.setStyleSheet("background: #0078d4; color: white; padding: 4px 16px;")
+            go_btn.clicked.connect(lambda: (self._open_github(), dlg.accept()))
+            btn_row.addStretch()
+            btn_row.addWidget(skip_btn)
+            btn_row.addWidget(go_btn)
+            layout.addLayout(btn_row)
+            dlg.exec()
+
+    def _reset_defaults(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("还原默认设置")
+        dlg.setFixedSize(340, 160)
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(10)
+        title = QLabel("还原默认设置")
+        title.setStyleSheet("font-size: 14px; font-weight: bold;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+        layout.addSpacing(4)
+        msg = QLabel("确定要恢复所有设置到默认状态吗？\n此操作将清除所有已保存的配置。")
+        msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        msg.setWordWrap(True)
+        layout.addWidget(msg)
+        layout.addStretch()
+        btn_row = QHBoxLayout()
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(dlg.reject)
+        ok_btn = QPushButton("确定还原")
+        ok_btn.setStyleSheet("background: #d43b3b; color: white; padding: 4px 16px;")
+        ok_btn.clicked.connect(dlg.accept)
+        btn_row.addStretch()
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(ok_btn)
+        layout.addLayout(btn_row)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        self.settings.clear()
+        self.src_edit.setText("")
+        self.dest_edit.setText("")
+        self.password_edit.clear()
+        self.password_confirm_edit.clear()
+        self.remember_pwd_cb.setChecked(False)
+        self.recursive_cb.setChecked(False)
+        self.group_size_spin.setValue(1)
+        self.volume_edit.clear()
+        self.enable_volume_cb.setChecked(True)
+        self.sort_combo.setCurrentIndex(0)
+        self.keep_hierarchy_cb.setChecked(False)
+        self.archive_rename_cb.setChecked(False)
+        self.archive_suffix_edit.setText(".zip")
+        self.first_cb.setChecked(True)
+        self.double_cb.setChecked(True)
+        self.compress_format_combo.setCurrentIndex(0)
+        self.keep_cb.setChecked(False)
+        self.output_list_cb.setChecked(False)
+        self.auto_close_cb.setChecked(True)
+        self.dark_mode_cb.setChecked(False)
+        self.confirm_config_cb.setChecked(True)
+        self.ext_table.setRowCount(0)
+        self.naming_table.setRowCount(0)
+        self._toggle_theme()
+        show_styled_dialog(self, "已还原", "所有设置已恢复为默认值。", width=280, height=150)
+
     # ==================== 持久化 ====================
 
     def _save_settings(self):
+        self.settings.setValue("window_geometry", self.saveGeometry())
         self.settings.setValue("src", self.src_edit.text())
         self.settings.setValue("dest", self.dest_edit.text())
         self.settings.setValue("group_size", self.group_size_spin.value())
