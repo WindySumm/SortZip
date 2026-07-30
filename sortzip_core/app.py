@@ -357,6 +357,13 @@ class MainWindow(QMainWindow):
 
         preview_group = QGroupBox("效果预览")
         preview_layout = QVBoxLayout(preview_group)
+        self.preview_info_label = QLabel()
+        self.preview_info_label.setWordWrap(True)
+        self.preview_info_label.setStyleSheet(
+            "background: #2d2d2d; color: #ffcc00; padding: 6px 10px;"
+            " border-radius: 4px; font-size: 12px;"
+        )
+        preview_layout.addWidget(self.preview_info_label)
         self.preview_tab_bar = QTabBar()
         self.preview_tab_bar.setExpanding(False)
         self.preview_tab_bar.currentChanged.connect(self._on_preview_tab_changed)
@@ -982,17 +989,35 @@ class MainWindow(QMainWindow):
                 ext_to_folder[ext_item.text().strip()] = name_item.text().strip() if name_item else ""
 
         folder_files = {}
+        all_files = []
         if src_path and os.path.isdir(src_path):
             try:
                 recursive = self.recursive_cb.isChecked()
                 iterator = Path(src_path).rglob('*') if recursive else Path(src_path).iterdir()
                 for f in iterator:
                     if f.is_file():
+                        all_files.append(f)
                         folder = ext_to_folder.get(f.suffix.lower())
                         if folder:
                             folder_files.setdefault(folder, []).append(f)
             except Exception:
                 pass
+
+        # 文件包含情况提示
+        checked_exts = set(ext_to_folder.keys())
+        excluded = [f for f in all_files if f.suffix.lower() not in checked_exts]
+        if not ext_to_folder or not all_files:
+            self.preview_info_label.setText("")
+        elif len(excluded) == 0:
+            self.preview_info_label.setText(f"✔ 已包含文件夹内全部 {len(all_files)} 个文件")
+        else:
+            sample = excluded[:5]
+            names = "、".join(f.name for f in sample)
+            suffix = "…" if len(excluded) > 5 else ""
+            self.preview_info_label.setText(
+                f"⚠ 已勾选扩展名未覆盖全部文件（{len(all_files)} 个中 {len(excluded)} 个未匹配）\n"
+                f"例如：{names}{suffix}"
+            )
 
         sort_by = self.sort_combo.currentText() if hasattr(self, 'sort_combo') else '文件名(升序)'
         sort_key = SORT_MAP.get(sort_by, 'name')
