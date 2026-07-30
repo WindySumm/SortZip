@@ -103,6 +103,8 @@ def show_conflict_dialog(parent, folder_name, template, conflicts):
 
 
 class ReorderableTable(QTableWidget):
+    rowsReordered = Signal()
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setDragDropMode(QTableWidget.DragDrop.InternalMove)
@@ -134,6 +136,7 @@ class ReorderableTable(QTableWidget):
         for col, item in enumerate(row_data):
             self.setItem(insert_row, col, item)
         event.accept()
+        self.rowsReordered.emit()
 
 
 class DropLineEdit(QLineEdit):

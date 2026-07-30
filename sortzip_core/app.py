@@ -250,6 +250,7 @@ class MainWindow(QMainWindow):
         self.ext_table.horizontalHeader().setStretchLastSection(False)
         self.ext_table.cellChanged.connect(self._on_table_cell_changed)
         self.ext_table.cellPressed.connect(self._on_ext_cell_pressed)
+        self.ext_table.rowsReordered.connect(self._refresh_preview)
         self._edit_old_folder_name = ""
         enabled_layout.addWidget(self.ext_table, 1)
 
@@ -334,6 +335,7 @@ class MainWindow(QMainWindow):
         self.naming_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.naming_table.cellChanged.connect(self._on_naming_cell_changed)
         self.naming_table.itemChanged.connect(self._on_naming_item_changed)
+        self.naming_table.rowsReordered.connect(self._refresh_preview)
         rename_layout.addWidget(self.naming_table, 1)
 
         naming_btn_row = QHBoxLayout()
