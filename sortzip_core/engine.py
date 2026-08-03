@@ -442,9 +442,10 @@ def group_compress(dest_root, group_size, password, volume_size=None,
             for arch in archives:
                 if _check_cancel(cancel_check):
                     return
-                test_cmd = [bandizip_path, 't', str(arch)]
+                test_cmd = [bandizip_path, 't']
                 if auto_close:
                     test_cmd.append('-y')
+                test_cmd.append(str(arch))
                 print(f"校验: {arch.name}")
                 try:
                     subprocess.run(test_cmd, check=True, capture_output=True, text=True)
