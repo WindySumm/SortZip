@@ -136,8 +136,11 @@ class MainWindow(QMainWindow):
         self.ext_del_btn.clicked.connect(self._del_ext_row)
         self.naming_add_btn.clicked.connect(lambda: self._add_naming_row("", ""))
         self.naming_del_btn.clicked.connect(self._del_naming_row)
+        self.enable_volume_cb.toggled.connect(self._on_enable_volume_toggled)
         self.run_btn.clicked.connect(self._run)
         self.cancel_btn.clicked.connect(self._cancel)
+
+        self._on_enable_volume_toggled(self.enable_volume_cb.isChecked())
 
         # 恢复窗口位置/尺寸
         geo = self.settings.value("window_geometry")
@@ -297,9 +300,18 @@ class MainWindow(QMainWindow):
 
     def _build_naming_page(self):
         page = QWidget()
-        layout = QVBoxLayout(page)
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
+        scroll.setWidget(content)
+        page_layout.addWidget(scroll)
 
         sort_group = QGroupBox("排序设置")
         sort_layout = QFormLayout(sort_group)
@@ -376,20 +388,41 @@ class MainWindow(QMainWindow):
 
         compress_rename_group = QGroupBox("压缩后重命名")
         compress_rename_layout = QVBoxLayout(compress_rename_group)
+
+        first_rename_row = QHBoxLayout()
+        first_rename_row.addWidget(QLabel("一次压缩后:"))
+        first_rename_row.addSpacing(4)
+        self.first_rename_cb = QCheckBox("启用后缀名替换")
+        self.first_rename_cb.setChecked(self.settings.value("first_rename_enable", False, type=bool))
+        first_rename_row.addWidget(self.first_rename_cb)
+        first_rename_row.addSpacing(6)
+        first_rename_row.addWidget(QLabel("替换为:"))
+        self.first_suffix_edit = QLineEdit(
+            self.settings.value("first_suffix_replace", f".{self.settings.value('archive_format', 'zip')}")
+        )
+        self.first_suffix_edit.setPlaceholderText(".zip")
+        first_rename_row.addWidget(self.first_suffix_edit)
+        first_rename_row.addStretch()
+        compress_rename_layout.addLayout(first_rename_row)
+
+        second_rename_row = QHBoxLayout()
+        second_rename_row.addWidget(QLabel("二次压缩后:"))
+        second_rename_row.addSpacing(4)
         self.archive_rename_cb = QCheckBox("启用后缀名替换")
         self.archive_rename_cb.setChecked(self.settings.value("archive_rename_enable", False, type=bool))
-        suffix_row = QHBoxLayout()
-        suffix_row.addWidget(self.archive_rename_cb)
-        suffix_row.addSpacing(10)
-        suffix_row.addWidget(QLabel("替换为:"))
+        second_rename_row.addWidget(self.archive_rename_cb)
+        second_rename_row.addSpacing(6)
+        second_rename_row.addWidget(QLabel("替换为:"))
         self.archive_suffix_edit = QLineEdit(
             self.settings.value("archive_suffix", f".{self.settings.value('archive_format', 'zip')}")
         )
         self.archive_suffix_edit.setPlaceholderText(".zip")
-        suffix_row.addWidget(self.archive_suffix_edit)
-        suffix_row.addStretch()
-        compress_rename_layout.addLayout(suffix_row)
+        second_rename_row.addWidget(self.archive_suffix_edit)
+        second_rename_row.addStretch()
+        compress_rename_layout.addLayout(second_rename_row)
+
         layout.addWidget(compress_rename_group)
+        layout.addStretch()
 
         self._load_naming_state()
         self._refresh_preview()
@@ -644,6 +677,8 @@ class MainWindow(QMainWindow):
         self.keep_hierarchy_cb.setChecked(False)
         self.archive_rename_cb.setChecked(False)
         self.archive_suffix_edit.setText(".zip")
+        self.first_rename_cb.setChecked(False)
+        self.first_suffix_edit.setText(".zip")
         self.first_cb.setChecked(True)
         self.double_cb.setChecked(True)
         self.compress_format_combo.setCurrentIndex(0)
@@ -686,6 +721,8 @@ class MainWindow(QMainWindow):
         self.settings.setValue("dark_mode", self.dark_mode_cb.isChecked())
         self.settings.setValue("archive_rename_enable", self.archive_rename_cb.isChecked())
         self.settings.setValue("archive_suffix", self.archive_suffix_edit.text())
+        self.settings.setValue("first_rename_enable", self.first_rename_cb.isChecked())
+        self.settings.setValue("first_suffix_replace", self.first_suffix_edit.text())
         self.settings.setValue("archive_format", self.compress_format_combo.currentText())
         self.settings.setValue("keep_hierarchy", self.keep_hierarchy_cb.isChecked())
         self.settings.setValue("confirm_config", self.confirm_config_cb.isChecked())
@@ -965,10 +1002,16 @@ class MainWindow(QMainWindow):
         suffix = f".{text}"
         self.archive_suffix_edit.setText(suffix)
         self.archive_suffix_edit.setPlaceholderText(suffix)
+        self.first_suffix_edit.setText(suffix)
+        self.first_suffix_edit.setPlaceholderText(suffix)
 
     def _on_first_compress_toggled(self, checked):
         if not checked and self.double_cb.isChecked():
             self.double_cb.setChecked(False)
+
+    def _on_enable_volume_toggled(self, checked):
+        self.first_rename_cb.setEnabled(not checked)
+        self.first_suffix_edit.setEnabled(not checked)
 
     def _on_double_compress_toggled(self, checked):
         if checked and not self.first_cb.isChecked():
@@ -1103,6 +1146,8 @@ class MainWindow(QMainWindow):
             'auto_close': self.auto_close_cb.isChecked(),
             'naming_rules': self._collect_naming_rules(),
             'archive_suffix': self.archive_suffix_edit.text().strip() if self.archive_rename_cb.isChecked() else '.zipp',
+            'first_suffix_replace': self.first_suffix_edit.text().strip()
+                            if (self.first_rename_cb.isChecked() and not self.enable_volume_cb.isChecked()) else None,
             'archive_format': self.compress_format_combo.currentText(),
             'keep_hierarchy': self.keep_hierarchy_cb.isChecked(),
             'verify_archive': self.verify_cb.isChecked(),

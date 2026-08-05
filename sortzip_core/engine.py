@@ -335,7 +335,7 @@ def group_compress(dest_root, group_size, password, volume_size=None,
                    auto_close=True, on_progress=None, cancel_check=None,
                    sort_by='name', archive_suffix='.zipp', first_suffix='-First',
                    enable_volume=True, keep_hierarchy=False, folder_order=None,
-                   verify=False):
+                   verify=False, first_suffix_replace=None):
     dest_root = Path(dest_root)
     folders = _collect_dirs(dest_root, keep_hierarchy)
     all_groups = []
@@ -387,6 +387,14 @@ def group_compress(dest_root, group_size, password, volume_size=None,
         try:
             subprocess.run(cmd, check=True, capture_output=True, text=True)
             print(f"成功创建分卷: {zip_path} (及其分卷)")
+            if first_suffix_replace and not enable_volume:
+                if zip_path.exists():
+                    new_zip_path = folder / f"{first_name}{first_suffix_replace}"
+                    if new_zip_path.exists():
+                        new_zip_path.unlink()
+                    zip_path.rename(new_zip_path)
+                    zip_path = new_zip_path
+                    print(f"一次压缩后缀替换: {zip_name} -> {new_zip_path.name}")
             if not keep_files:
                 for f in group:
                     try:
@@ -532,6 +540,7 @@ def main_from_config(config, on_progress=None, cancel_check=None):
             keep_hierarchy=keep_hierarchy,
             folder_order=folder_order,
             verify=config.get('verify_archive', False),
+            first_suffix_replace=config.get('first_suffix_replace'),
         )
         print("所有任务完成！")
     else:
