@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -12,13 +13,13 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThread, Slot, Signal, QTimer, QSettings, QUrl
 from PySide6.QtGui import QIcon, QTextCursor, QDesktopServices
 
-from sortzip_core.constants import EXT_CATEGORIES, DARK_QSS, RENAME_PRESETS, validate_win_folder_name
-from sortzip_core.engine import _match_rule, check_naming_conflicts, render_template, _sort_files
+from sortzip_core.constants import EXT_CATEGORIES, DARK_QSS, RENAME_PRESETS, validate_win_folder_name, RESUME_FILE_NAME
+from sortzip_core.engine import _match_rule, check_naming_conflicts, render_template, _sort_files, _load_checkpoint, _checkpoint_path
 from sortzip_core import __version__
 from sortzip_core.widgets import (
     resource_path, show_styled_dialog, show_stats_dialog,
     show_manual_dialog, show_conflict_dialog,
-    ReorderableTable, DropLineEdit, Worker,
+    ReorderableTable, DropLineEdit, DropResumeButton, Worker,
 )
 
 
@@ -141,6 +142,9 @@ class MainWindow(QMainWindow):
         self.enable_volume_cb.toggled.connect(self._on_enable_volume_toggled)
         self.run_btn.clicked.connect(self._run)
         self.cancel_btn.clicked.connect(self._cancel)
+        self.resume_btn.clicked.connect(self._import_resume)
+        self.resume_btn.resumeDropped.connect(self._start_resume)
+        self.resume_btn.resumeDragEntered.connect(lambda: None)
 
         self._on_enable_volume_toggled(self.enable_volume_cb.isChecked())
 
@@ -508,8 +512,13 @@ class MainWindow(QMainWindow):
         self.cancel_btn = QPushButton("取消")
         self.cancel_btn.setMinimumHeight(40)
         self.cancel_btn.setEnabled(False)
+        self.resume_btn = DropResumeButton("继续任务（导入断点）")
+        self.resume_btn.setMinimumHeight(40)
+        self.resume_btn.setToolTip("导入 .sortzip_resume.json 断点文件，从中断处继续压缩\n支持点击选择或直接拖入文件")
+        self.resume_btn.setAcceptDrops(True)
         progress_row.addWidget(self.run_btn)
         progress_row.addWidget(self.cancel_btn)
+        layout.addWidget(self.resume_btn)
         layout.addLayout(progress_row)
 
         layout.addWidget(QLabel("输出日志:"))
@@ -904,7 +913,7 @@ class MainWindow(QMainWindow):
         iterator = Path(src_path).rglob('*') if recursive else Path(src_path).iterdir()
         src_exts = set()
         for f in iterator:
-            if f.is_file():
+            if f.is_file() and f.name != RESUME_FILE_NAME:
                 ext = f.suffix.lower()
                 if ext:
                     src_exts.add(ext)
@@ -1097,7 +1106,7 @@ class MainWindow(QMainWindow):
                 recursive = self.recursive_cb.isChecked()
                 iterator = Path(src_path).rglob('*') if recursive else Path(src_path).iterdir()
                 for f in iterator:
-                    if f.is_file():
+                    if f.is_file() and f.name != RESUME_FILE_NAME:
                         folder = ext_to_folder.get(f.suffix.lower())
                         if folder:
                             folder_files.setdefault(folder, []).append(f)
@@ -1433,11 +1442,155 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.log_text.clear()
         self._last_dest_path = config.get('dest', '')
+        self._launch_worker(config)
 
+    def _cancel(self):
+        if self.worker:
+            self.worker.cancel()
+            self.cancel_btn.setEnabled(False)
+            self._append_log("正在取消，将在当前组完成的安全点自动停止...")
+
+    @Slot()
+    def _on_cancel_waiting(self):
+        if not self.worker or getattr(self, '_cancel_dlg', None):
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("正在停止")
+        dlg.setFixedSize(340, 170)
+        layout = QVBoxLayout(dlg)
+        title_lbl = QLabel("取消已排队")
+        title_lbl.setStyleSheet("font-size: 14px; font-weight: bold;")
+        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_lbl)
+        msg_lbl = QLabel("当前压缩组完成后将自动停止，请稍候…")
+        msg_lbl.setWordWrap(True)
+        msg_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(msg_lbl)
+        layout.addStretch()
+        force_btn = QPushButton("强制取消")
+        force_btn.setStyleSheet("background: #c00000; color: white; padding: 6px 16px;")
+        force_btn.clicked.connect(lambda: self._force_cancel(dlg))
+        layout.addWidget(force_btn)
+        self._cancel_dlg = dlg
+        dlg.finished.connect(lambda *_: setattr(self, '_cancel_dlg', None))
+        dlg.show()
+
+    def _force_cancel(self, dlg):
+        dlg.accept()
+        if self.worker:
+            self.worker.force_cancel()
+            self._append_log("已请求强制取消（当前压缩将立即终止）")
+
+    def _import_resume(self):
+        if self.worker:
+            show_styled_dialog(self, "任务进行中", "请先等待当前任务结束")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择断点文件", "", f"断点文件 ({RESUME_FILE_NAME})")
+        if not path:
+            return
+        self._start_resume(path)
+
+    def _start_resume(self, checkpoint_path):
+        try:
+            data = _load_checkpoint(checkpoint_path)
+        except ValueError as e:
+            show_styled_dialog(self, "断点文件无效", str(e))
+            return
+        groups = data.get('groups', [])
+        cfg = data.get('config', {})
+        if not groups:
+            show_styled_dialog(self, "断点文件无效", "断点文件中没有分组信息")
+            return
+        pending = sum(1 for g in groups if g.get('state') != 'final_done')
+        if pending <= 0:
+            dlg = QDialog(self)
+            dlg.setWindowTitle("任务已完成")
+            layout = QVBoxLayout(dlg)
+            lbl = QLabel("该断点文件中的所有分组均已完成，无需续传。\n是否删除该断点文件？")
+            lbl.setWordWrap(True)
+            layout.addWidget(lbl)
+            btn_row = QHBoxLayout()
+            cancel_btn = QPushButton("保留")
+            cancel_btn.clicked.connect(dlg.reject)
+            ok_btn = QPushButton("删除")
+            ok_btn.clicked.connect(dlg.accept)
+            btn_row.addWidget(cancel_btn)
+            btn_row.addWidget(ok_btn)
+            layout.addLayout(btn_row)
+            dlg.setFixedSize(300, 140)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                try:
+                    Path(checkpoint_path).unlink()
+                    self._append_log(f"已删除断点文件: {checkpoint_path}\n")
+                except OSError as e:
+                    self._append_log(f"删除断点文件失败: {e}\n")
+            return
+
+        password = ""
+        if self.settings.value("remember_pwd", False, type=bool):
+            password = self.settings.value("password", "")
+        if not self._confirm_resume(checkpoint_path, cfg, groups, pending):
+            return
+        text, ok = QInputDialog.getText(
+            self, "输入密码", "请输入压缩密码（原任务如有密码）：",
+            QLineEdit.EchoMode.Password, password)
+        if not ok:
+            return
+        password = text if text else ""
+
+        config = {
+            'resume_from': checkpoint_path,
+            'password': password,
+            'bandizip': 'bandizip',
+            'dest': str(Path(checkpoint_path).parent),
+        }
+        self._last_dest_path = config['dest']
+        self._launch_worker(config)
+
+    def _confirm_resume(self, checkpoint_path, cfg, groups, pending):
+        volume = cfg.get('volume')
+        msg = (f"断点文件: {Path(checkpoint_path).name}\n"
+               f"输出文件夹: {Path(checkpoint_path).parent}\n"
+               f"待处理组数: {pending} / {len(groups)}\n"
+               f"分组大小: {cfg.get('group_size')}\n"
+               f"分卷: {volume or '自动检测'}\n"
+               f"后缀: {cfg.get('archive_suffix', '.zipp')}\n"
+               f"二次打包: {'开启' if cfg.get('double_compress', True) else '关闭'}\n"
+               f"校验完整性: {'开启' if cfg.get('verify', False) else '关闭'}\n\n"
+               f"续传将以断点文件中的配置为准。")
+        dlg = QDialog(self)
+        dlg.setWindowTitle("确认续传")
+        layout = QVBoxLayout(dlg)
+        title_lbl = QLabel("续传确认")
+        title_lbl.setStyleSheet("font-size: 14px; font-weight: bold;")
+        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_lbl)
+        msg_lbl = QLabel(msg)
+        msg_lbl.setWordWrap(True)
+        msg_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(msg_lbl)
+        btn_row = QHBoxLayout()
+        cbtn = QPushButton("取消")
+        cbtn.clicked.connect(dlg.reject)
+        obtn = QPushButton("确认续传")
+        obtn.setStyleSheet("background: #0078d4; color: white; padding: 4px 16px;")
+        obtn.clicked.connect(dlg.accept)
+        btn_row.addWidget(cbtn)
+        btn_row.addWidget(obtn)
+        layout.addLayout(btn_row)
+        dlg.setFixedSize(420, 320)
+        return dlg.exec() == QDialog.DialogCode.Accepted
+
+    def _launch_worker(self, config):
+        self.run_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.resume_btn.setEnabled(False)
+        self.progress_bar.setValue(0)
+        self.log_text.clear()
         self.thread = QThread()
         self.worker = Worker(config)
         self.worker.moveToThread(self.thread)
-
         self.thread.started.connect(self.worker.run)
         self.worker.finished.connect(self.thread.quit)
         self.worker.finished.connect(self.worker.deleteLater)
@@ -1447,14 +1600,8 @@ class MainWindow(QMainWindow):
         self.worker.log.connect(self._append_log)
         self.worker.error.connect(lambda e: self._append_log(f"[错误] {e}"))
         self.worker.progress.connect(self._update_progress)
-
+        self.worker.cancel_waiting.connect(self._on_cancel_waiting)
         self.thread.start()
-
-    def _cancel(self):
-        if self.worker:
-            self.worker.cancel()
-            self.cancel_btn.setEnabled(False)
-            self._append_log("正在取消...")
 
     @Slot(int, int, str)
     def _update_progress(self, value, maximum, text):
@@ -1464,6 +1611,9 @@ class MainWindow(QMainWindow):
     def _on_finished(self):
         self.run_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
+        self.resume_btn.setEnabled(True)
+        if getattr(self, '_cancel_dlg', None):
+            self._cancel_dlg.accept()
         self.progress_bar.setValue(100)
         self.progress_bar.setFormat("完成  [100%]")
         stats = self.worker.stats if self.worker else {}

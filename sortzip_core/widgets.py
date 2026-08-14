@@ -162,6 +162,34 @@ class DropLineEdit(QLineEdit):
             super().dropEvent(event)
 
 
+class DropResumeButton(QPushButton):
+    resumeDropped = Signal(str)
+    resumeDragEntered = Signal()
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if url.toLocalFile().endswith("sortzip_resume.json"):
+                    event.acceptProposedAction()
+                    self.resumeDragEntered.emit()
+                    return
+        super().dragEnterEvent(event)
+
+    def dropEvent(self, event: QDropEvent):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                path = url.toLocalFile()
+                if path.endswith("sortzip_resume.json"):
+                    self.resumeDropped.emit(path)
+                    event.acceptProposedAction()
+                    return
+        super().dropEvent(event)
+
+
 class LogStream:
     def __init__(self, signal):
         self.signal = signal
@@ -178,19 +206,29 @@ class Worker(QObject):
     log = Signal(str)
     error = Signal(str)
     progress = Signal(int, int, str)
+    cancel_waiting = Signal()
     finished = Signal()
 
     def __init__(self, config):
         super().__init__()
         self.config = config
         self._cancelled = False
+        self._force_cancelled = False
         self.stats = {"files_moved": 0, "files_renamed": 0, "groups": 0}
 
     def cancel(self):
         self._cancelled = True
+        self.cancel_waiting.emit()
+
+    def force_cancel(self):
+        self._force_cancelled = True
+        self._cancelled = True
 
     def _cancel_check(self):
         return self._cancelled
+
+    def _force_cancel_check(self):
+        return self._force_cancelled
 
     @Slot()
     def run(self):
@@ -201,6 +239,7 @@ class Worker(QObject):
                 self.config,
                 on_progress=lambda start, end, cur, total, msg: self._report_progress(start, end, cur, total, msg),
                 cancel_check=self._cancel_check,
+                force_cancel_check=self._force_cancel_check,
             )
         except Exception as e:
             self.error.emit(str(e))
