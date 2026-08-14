@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QFormLayout, QLineEdit, QSpinBox, QComboBox,
     QCheckBox, QPushButton, QProgressBar, QTextEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QLabel, QFileDialog, QScrollArea, QGridLayout,
-    QStackedWidget, QTabBar, QDialog,
+    QStackedWidget, QTabBar, QDialog, QInputDialog,
 )
 from PySide6.QtCore import Qt, QThread, Slot, Signal, QTimer, QSettings, QUrl
 from PySide6.QtGui import QIcon, QTextCursor, QDesktopServices
@@ -134,6 +134,8 @@ class MainWindow(QMainWindow):
         self.dest_btn.clicked.connect(lambda: self._browse_folder(self.dest_edit))
         self.ext_add_btn.clicked.connect(lambda: self._add_ext_row("", ""))
         self.ext_del_btn.clicked.connect(self._del_ext_row)
+        self.ext_all_btn.clicked.connect(self._enable_all_mappings)
+        self.ext_del_all_btn.clicked.connect(self._del_all_ext_rows)
         self.naming_add_btn.clicked.connect(lambda: self._add_naming_row("", ""))
         self.naming_del_btn.clicked.connect(self._del_naming_row)
         self.enable_volume_cb.toggled.connect(self._on_enable_volume_toggled)
@@ -259,10 +261,14 @@ class MainWindow(QMainWindow):
         enabled_layout.addWidget(self.ext_table, 1)
 
         ext_btn_row = QHBoxLayout()
+        self.ext_all_btn = QPushButton("映射全部")
         self.ext_add_btn = QPushButton("添加")
         self.ext_del_btn = QPushButton("删除选中")
+        self.ext_del_all_btn = QPushButton("删除全部")
+        ext_btn_row.addWidget(self.ext_all_btn)
         ext_btn_row.addWidget(self.ext_add_btn)
         ext_btn_row.addWidget(self.ext_del_btn)
+        ext_btn_row.addWidget(self.ext_del_all_btn)
         ext_btn_row.addStretch()
         enabled_layout.addLayout(ext_btn_row)
 
@@ -878,6 +884,63 @@ class MainWindow(QMainWindow):
                     self._ext_pickers[ext].setChecked(False)
                     self._ext_pickers[ext].blockSignals(False)
             self.ext_table.removeRow(r)
+
+    def _del_all_ext_rows(self):
+        self.ext_table.blockSignals(True)
+        self.ext_table.setRowCount(0)
+        self.ext_table.blockSignals(False)
+        for chk in self._ext_pickers.values():
+            chk.blockSignals(True)
+            chk.setChecked(False)
+            chk.blockSignals(False)
+        self._refresh_preview()
+
+    def _enable_all_mappings(self):
+        src_path = self.src_edit.text().strip()
+        if not src_path or not os.path.isdir(src_path):
+            show_styled_dialog(self, "错误", "请先选择有效的输入文件夹", width=300, height=160)
+            return
+        recursive = self.recursive_cb.isChecked()
+        iterator = Path(src_path).rglob('*') if recursive else Path(src_path).iterdir()
+        src_exts = set()
+        for f in iterator:
+            if f.is_file():
+                ext = f.suffix.lower()
+                if ext:
+                    src_exts.add(ext)
+        if not src_exts:
+            show_styled_dialog(self, "无匹配文件", "输入文件夹中未发现任何文件", width=300, height=160)
+            return
+        ext_to_cat = {}
+        for cat_name, exts in EXT_CATEGORIES.items():
+            for ext in exts:
+                ext_to_cat[ext] = cat_name
+        self.ext_table.blockSignals(True)
+        existing = {}
+        for r in range(self.ext_table.rowCount()):
+            ext_item = self.ext_table.item(r, 1)
+            if ext_item and ext_item.text().strip():
+                existing[ext_item.text().strip()] = r
+        for ext in sorted(src_exts):
+            if ext in existing:
+                chk_item = self.ext_table.item(existing[ext], 0)
+                if chk_item:
+                    chk_item.setCheckState(Qt.CheckState.Checked)
+            else:
+                category = ext_to_cat.get(ext)
+                if category is None:
+                    name, ok = QInputDialog.getText(
+                        self, "自定义映射", f"扩展名 {ext} 不在预设列表中，请输入文件夹名：",
+                        text=ext[1:])
+                    if not ok or not name.strip():
+                        continue
+                    name = name.strip()
+                else:
+                    name = category
+                self._add_ext_row(ext, name, checked=True)
+        self.ext_table.blockSignals(False)
+        self._sync_pickers_from_table()
+        self._refresh_preview()
 
     def _on_ext_picker_toggled(self, ext, category, checked):
         self.ext_table.blockSignals(True)
