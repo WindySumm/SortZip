@@ -169,14 +169,14 @@ class MainWindow(QMainWindow):
         src_row = QHBoxLayout()
         src_row.addWidget(self.src_edit)
         src_row.addWidget(self.src_btn)
-        file_sel_layout.addRow("源文件夹:", src_row)
+        file_sel_layout.addRow("输入文件夹:", src_row)
 
         self.dest_edit = DropLineEdit(self.settings.value("dest", ""))
         self.dest_btn = QPushButton("浏览")
         dest_row = QHBoxLayout()
         dest_row.addWidget(self.dest_edit)
         dest_row.addWidget(self.dest_btn)
-        file_sel_layout.addRow("目标目录:", dest_row)
+        file_sel_layout.addRow("输出文件夹:", dest_row)
 
         self.recursive_cb = QCheckBox("包含子文件夹")
         self.recursive_cb.setChecked(self.settings.value("recursive", False, type=bool))
@@ -1250,7 +1250,7 @@ class MainWindow(QMainWindow):
         config = self._build_config()
 
         if not config['src'] or not os.path.isdir(config['src']):
-            show_styled_dialog(self, "错误", "请选择有效的源文件夹")
+            show_styled_dialog(self, "错误", "请选择有效的输入文件夹")
             return
         if config['password'] and len(config['password']) < 8:
             show_styled_dialog(self, "密码格式错误",
@@ -1271,10 +1271,10 @@ class MainWindow(QMainWindow):
             mapped_folders = set(custom_names.values())
             overlap = existing_dirs & mapped_folders
             if overlap:
-                show_styled_dialog(self, "目标文件夹冲突",
-                                   "目标文件夹中已存在以下映射目录名：\n" +
+                show_styled_dialog(self, "输出文件夹冲突",
+                                   "输出文件夹中已存在以下映射目录名：\n" +
                                    "\n".join(f"  · {name}" for name in sorted(overlap)) +
-                                   "\n\n请先清理目标文件夹或修改映射名称",
+                                   "\n\n请先清理输出文件夹或修改映射名称",
                                    width=340, height=200)
                 return
 
@@ -1285,8 +1285,8 @@ class MainWindow(QMainWindow):
             checked_exts = set(custom_names.keys())
             if not src_exts & checked_exts:
                 show_styled_dialog(self, "无匹配文件",
-                                   "源文件夹中没有符合已勾选扩展名的文件\n"
-                                   "请检查源文件夹或勾选正确的扩展名",
+                                   "输入文件夹中没有符合已勾选扩展名的文件\n"
+                                   "请检查输入文件夹或勾选正确的扩展名",
                                    width=320, height=170)
                 return
 

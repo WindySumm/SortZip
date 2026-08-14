@@ -68,7 +68,7 @@ def show_stats_dialog(parent, stats, dest_path=None):
     layout.addStretch()
     btn_layout = QHBoxLayout()
     if dest_path:
-        open_btn = QPushButton("打开目标文件夹")
+        open_btn = QPushButton("打开输出文件夹")
         open_btn.clicked.connect(lambda: os.startfile(dest_path))
         btn_layout.addWidget(open_btn)
     ok_btn = QPushButton("确定")
