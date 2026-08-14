@@ -3,7 +3,7 @@ import sys
 
 from PySide6.QtWidgets import (
     QLineEdit, QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
-    QTextBrowser, QTableWidget,
+    QTextBrowser, QTableWidget, QFormLayout,
 )
 from PySide6.QtCore import Qt, QObject, Signal, Slot
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
@@ -18,6 +18,92 @@ def resource_path(relative_path):
     else:
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, relative_path)
+
+
+def validate_password(password, confirm):
+    """校验压缩密码，返回错误文案或 None。规则与执行前校验保持一致：非空则至少 8 位、两次输入一致。"""
+    if password and len(password) < 8:
+        return ("密码格式错误",
+                "压缩密码至少需要 8 位字符\n"
+                "支持字母、数字和特殊符号\n"
+                "如不需要密码请留空")
+    if password != confirm:
+        return ("密码不一致", "两次输入的压缩密码不一致\n请重新输入")
+    return None
+
+
+class PasswordDialog(QDialog):
+    """复用主界面密码区块的交互：密码 + 确认密码 + 显示/隐藏切换 + 长度/一致性校验。"""
+
+    def __init__(self, parent=None, initial="", hint=""):
+        super().__init__(parent)
+        self.setWindowTitle("输入压缩密码")
+        self.setFixedSize(340, 230)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        title_lbl = QLabel("输入压缩密码")
+        title_lbl.setStyleSheet("font-size: 14px; font-weight: bold;")
+        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_lbl)
+
+        if hint:
+            hint_lbl = QLabel(hint)
+            hint_lbl.setStyleSheet("color: #888888; font-size: 12px;")
+            hint_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(hint_lbl)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+
+        self.password_edit = QLineEdit(initial)
+        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_edit.setPlaceholderText("留空表示无密码")
+        self.confirm_edit = QLineEdit(initial)
+        self.confirm_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.confirm_edit.setPlaceholderText("再次输入压缩密码")
+        self.pwd_toggle_btn = QPushButton("显示")
+        self.pwd_toggle_btn.setFixedWidth(40)
+        self.pwd_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pwd_toggle_btn.clicked.connect(self._toggle_password)
+        confirm_row = QHBoxLayout()
+        confirm_row.addWidget(self.confirm_edit)
+        confirm_row.addWidget(self.pwd_toggle_btn)
+
+        form.addRow("压缩密码:", self.password_edit)
+        form.addRow("确认密码:", confirm_row)
+        layout.addLayout(form)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        ok_btn = QPushButton("确定")
+        ok_btn.setStyleSheet("background: #0078d4; color: white; padding: 4px 16px;")
+        ok_btn.clicked.connect(self._on_ok)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(ok_btn)
+        layout.addLayout(btn_row)
+
+    def _toggle_password(self):
+        if self.password_edit.echoMode() == QLineEdit.EchoMode.Password:
+            self.password_edit.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.confirm_edit.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.pwd_toggle_btn.setText("隐藏")
+        else:
+            self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self.confirm_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self.pwd_toggle_btn.setText("显示")
+
+    def _on_ok(self):
+        err = validate_password(self.password_edit.text(), self.confirm_edit.text())
+        if err:
+            show_styled_dialog(self, err[0], err[1])
+            return
+        self.accept()
+
+    def password(self):
+        return self.password_edit.text()
 
 
 def show_styled_dialog(parent, title, message, width=300, height=160):
@@ -42,13 +128,19 @@ def show_styled_dialog(parent, title, message, width=300, height=160):
     dlg.exec()
 
 
-def show_stats_dialog(parent, stats, dest_path=None):
+def show_stats_dialog(parent, stats, dest_path=None, status="completed"):
     dlg = QDialog(parent)
     dlg.setWindowTitle("统计报告")
     dlg.setFixedSize(280, 200)
     layout = QVBoxLayout(dlg)
     layout.setSpacing(10)
-    title = QLabel("处理成功完成")
+    titles = {
+        "completed": "处理成功完成",
+        "safe_cancelled": "已安全中断",
+        "force_cancelled": "已强制中断",
+        "error": "处理中断（异常）",
+    }
+    title = QLabel(titles.get(status, "处理完成"))
     title.setStyleSheet("font-size: 14px; font-weight: bold;")
     title.setAlignment(Qt.AlignmentFlag.AlignCenter)
     layout.addWidget(title)
@@ -58,7 +150,10 @@ def show_stats_dialog(parent, stats, dest_path=None):
                        ("压缩组数", "groups")]:
         row = QHBoxLayout()
         lbl = QLabel(f"{label}:")
-        val = QLabel(str(stats.get(key, 0)))
+        val_text = str(stats.get(key, 0))
+        if key == "groups" and stats.get("groups_total"):
+            val_text = f"{stats.get('groups', 0)}/{stats['groups_total']}"
+        val = QLabel(val_text)
         val.setStyleSheet("font-weight: bold;")
         row.addStretch()
         row.addWidget(lbl)
@@ -214,6 +309,7 @@ class Worker(QObject):
         self.config = config
         self._cancelled = False
         self._force_cancelled = False
+        self.status = "completed"
         self.stats = {"files_moved": 0, "files_renamed": 0, "groups": 0}
 
     def cancel(self):
@@ -235,13 +331,14 @@ class Worker(QObject):
         old_stdout = sys.stdout
         sys.stdout = LogStream(self.log)
         try:
-            main_from_config(
+            self.status = main_from_config(
                 self.config,
                 on_progress=lambda start, end, cur, total, msg: self._report_progress(start, end, cur, total, msg),
                 cancel_check=self._cancel_check,
                 force_cancel_check=self._force_cancel_check,
             )
         except Exception as e:
+            self.status = "error"
             self.error.emit(str(e))
         finally:
             sys.stdout = old_stdout
@@ -258,4 +355,5 @@ class Worker(QObject):
             self.stats["files_renamed"] = cur
         elif msg.startswith("压缩"):
             self.stats["groups"] = cur
+            self.stats["groups_total"] = total
         self.progress.emit(pct, 100, msg)

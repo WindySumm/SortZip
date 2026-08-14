@@ -46,6 +46,12 @@ def _check_cancel(cancel_check):
     return False
 
 
+def _cancel_status(force_cancel_check):
+    if force_cancel_check and force_cancel_check():
+        return "force_cancelled"
+    return "safe_cancelled"
+
+
 SORT_FUNCS = {
     'name':        _natural_key,
     'name_desc':   _natural_key,
@@ -365,7 +371,7 @@ def get_auto_volume(total_size_bytes):
         return f"{mb}m"
 
 
-# ---- 断点续传 ----
+# ---- 恢复任务 ----
 
 def _checkpoint_path(dest_root):
     return Path(dest_root) / RESUME_FILE_NAME
@@ -433,6 +439,7 @@ def _build_group_plan(dest_root, folders, all_groups):
             "folder": rel,
             "base_name": base_name,
             "files": [f.name for f in group],
+            "sizes": {f.name: f.stat().st_size for f in group},
             "state": "pending",
         })
     return groups
@@ -446,6 +453,33 @@ def _find_group_files(dest_root, group):
         if p.exists():
             files.append(p)
     return files
+
+
+def validate_resume_files(checkpoint_path):
+    """校验断点引用的源文件是否仍存在且未被修改。
+
+    返回问题描述列表；空列表表示一切正常。仅校验尚未压缩（pending）的分组：
+    final_done 与 first_done 分组的源文件可能已按规则删除，属于正常状态。
+    """
+    data = _load_checkpoint(checkpoint_path)
+    dest_root = Path(checkpoint_path).parent
+    problems = []
+    for g in data.get('groups', []):
+        if g.get('state') != 'pending':
+            continue
+        folder = Path(dest_root) / g['folder']
+        label = f"组 {g.get('base_name', '?')} ({g.get('folder', '?')})"
+        if not folder.is_dir():
+            problems.append(f"{label}: 文件夹不存在")
+            continue
+        sizes = g.get('sizes') or {}
+        for name in g.get('files', []):
+            p = folder / name
+            if not p.is_file():
+                problems.append(f"{label}: 文件缺失: {name}")
+            elif name in sizes and p.stat().st_size != sizes[name]:
+                problems.append(f"{label}: 文件已被修改: {name}（大小不一致）")
+    return problems
 
 
 def _compress_first(folder, base_name, files, password, bandizip_path, volume_size,
@@ -571,9 +605,11 @@ def group_compress(dest_root, group_size, password, volume_size=None,
 
     total = len(groups)
     completed = True
+    status = "completed"
     for idx, g in enumerate(groups, start=1):
         if _check_cancel(cancel_check):
             completed = False
+            status = _cancel_status(force_cancel_check)
             break
         if g.get('state') == 'final_done':
             continue
@@ -594,9 +630,15 @@ def group_compress(dest_root, group_size, password, volume_size=None,
             try:
                 _compress_second(folder, base_name, first_suffix, password, bandizip_path,
                                  auto_close, archive_suffix, force_cancel_check)
-            except (subprocess.CalledProcessError, FileNotFoundError, ForceCancelled) as e:
-                print(f"续传二次打包未完成: {e}")
+            except ForceCancelled:
+                print("已强制取消（二次打包被终止），源文件已删除，断点为 first_done。")
                 completed = False
+                status = "force_cancelled"
+                break
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                print(f"恢复二次打包未完成: {e}")
+                completed = False
+                status = "error"
                 break
             g['state'] = 'final_done'
             _write_checkpoint(dest_root, {
@@ -606,8 +648,15 @@ def group_compress(dest_root, group_size, password, volume_size=None,
             })
             continue
         files = _find_group_files(dest_root, g)
-        if not files:
-            print(f"警告: 组 {base_name} 源文件缺失，跳过")
+        sizes = g.get('sizes') or {}
+        missing = [n for n in g.get('files', []) if not (folder / n).is_file()]
+        modified = [n for n in g.get('files', []) if (folder / n).is_file()
+                    and n in sizes and (folder / n).stat().st_size != sizes[n]]
+        if missing or modified:
+            if missing:
+                print(f"警告: 组 {base_name} 源文件缺失，跳过该组: {', '.join(missing)}")
+            if modified:
+                print(f"警告: 组 {base_name} 源文件已被修改（大小不一致），跳过该组: {', '.join(modified)}")
             g['state'] = 'final_done'
             continue
         for stale in folder.glob(f"{base_name}{first_suffix}.*"):
@@ -622,16 +671,19 @@ def group_compress(dest_root, group_size, password, volume_size=None,
                             auto_close, enable_volume, first_suffix, first_suffix_replace,
                             force_cancel_check)
         except ForceCancelled:
-            print("已强制取消（一次压缩被终止），源文件未删除，可续传恢复。")
+            print("已强制取消（一次压缩被终止），源文件未删除，可恢复。")
             completed = False
+            status = "force_cancelled"
             break
         except subprocess.CalledProcessError as e:
             print(f"第一次压缩失败: {e.stderr}")
             completed = False
+            status = "error"
             break
         except FileNotFoundError:
             print(f"错误: 找不到可执行文件 '{bandizip_path}'，请确保已安装并加入PATH。")
             completed = False
+            status = "error"
             break
         g['state'] = 'first_done' if double_compress else 'final_done'
         _write_checkpoint(dest_root, {
@@ -649,6 +701,7 @@ def group_compress(dest_root, group_size, password, volume_size=None,
         if double_compress:
             if _check_cancel(cancel_check):
                 completed = False
+                status = _cancel_status(force_cancel_check)
                 break
             try:
                 _compress_second(folder, base_name, first_suffix, password, bandizip_path,
@@ -656,14 +709,17 @@ def group_compress(dest_root, group_size, password, volume_size=None,
             except ForceCancelled:
                 print("已强制取消（二次打包被终止），源文件已删除，断点为 first_done。")
                 completed = False
+                status = "force_cancelled"
                 break
             except (subprocess.CalledProcessError, OSError) as e:
                 print(f"二次打包未完成: {e}，保留分卷文件")
                 completed = False
+                status = "error"
                 break
             except FileNotFoundError:
                 print(f"错误: 找不到可执行文件 '{bandizip_path}'，请确保已安装并加入PATH。")
                 completed = False
+                status = "error"
                 break
             g['state'] = 'final_done'
             _write_checkpoint(dest_root, {
@@ -685,7 +741,7 @@ def group_compress(dest_root, group_size, password, volume_size=None,
                                                  '.bz2', '.xz', '.lzh', '.alz', '.egg', '.zipp')]
             for arch in archives:
                 if _check_cancel(cancel_check):
-                    return
+                    return _cancel_status(force_cancel_check)
                 test_cmd = [bandizip_path, 't']
                 if password:
                     test_cmd.append('-p:' + password)
@@ -700,11 +756,12 @@ def group_compress(dest_root, group_size, password, volume_size=None,
                     print(f"  ✘ {arch.name} 校验失败，文件可能已损坏")
                 except FileNotFoundError:
                     print(f"  ✘ 找不到 Bandizip，无法校验")
-                    return
+                    return "error"
         print("校验完成。")
 
     if completed and not _check_cancel(cancel_check):
         _delete_checkpoint(dest_root)
+    return status
 
 
 def _resume_task(checkpoint_path, password, bandizip_path, on_progress, cancel_check,
@@ -713,7 +770,7 @@ def _resume_task(checkpoint_path, password, bandizip_path, on_progress, cancel_c
     cfg = data.get('config', {})
     groups = data.get('groups', [])
     pending = sum(1 for g in groups if g.get('state') != 'final_done')
-    print("=== 断点续传 ===")
+    print("=== 恢复任务 ===")
     print(f"断点文件: {checkpoint_path}")
     print(f"待处理组数: {pending} / {len(groups)}")
     print(f"分组大小: {cfg.get('group_size')}")
@@ -722,12 +779,12 @@ def _resume_task(checkpoint_path, password, bandizip_path, on_progress, cancel_c
     print(f"二次打包: {'开启' if cfg.get('double_compress', True) else '关闭'}")
     print("=" * 40)
     if pending <= 0:
-        print("所有组均已完成，无需续传。")
-        return
+        print("所有组均已完成，无需恢复。")
+        return "completed"
     dest_root = Path(checkpoint_path).parent
     if on_progress:
-        on_progress(0, 100, 0, 1, "准备续传...")
-    group_compress(
+        on_progress(0, 100, 0, 1, "准备恢复...")
+    return group_compress(
         dest_root=str(dest_root),
         group_size=cfg.get('group_size', 1),
         password=password,
@@ -753,9 +810,9 @@ def _resume_task(checkpoint_path, password, bandizip_path, on_progress, cancel_c
 def main_from_config(config, on_progress=None, cancel_check=None, force_cancel_check=None):
     resume_from = config.get('resume_from')
     if resume_from:
-        _resume_task(resume_from, config.get('password', ''), config.get('bandizip', 'bandizip'),
-                     on_progress, cancel_check, force_cancel_check)
-        return
+        return _resume_task(resume_from, config.get('password', ''),
+                            config.get('bandizip', 'bandizip'),
+                            on_progress, cancel_check, force_cancel_check)
     print("=== 使用配置参数运行 ===")
     print(f"输入文件夹: {config['src']}")
     print(f"输出文件夹: {config['dest']}")
@@ -781,7 +838,7 @@ def main_from_config(config, on_progress=None, cancel_check=None, force_cancel_c
     naming_rules = config.get('naming_rules', None)
     keep_hierarchy = config.get('keep_hierarchy', False)
     if _check_cancel(cancel_check):
-        return
+        return _cancel_status(force_cancel_check)
     print("开始文件分类...")
     created_dirs = classify_files(src, dest, custom_names,
                    on_progress=lambda c, t, m: on_progress(0, 30, c, t, m) if on_progress else None,
@@ -791,7 +848,7 @@ def main_from_config(config, on_progress=None, cancel_check=None, force_cancel_c
                    keep_hierarchy=keep_hierarchy)
     print("分类完成。")
     if _check_cancel(cancel_check):
-        return
+        return _cancel_status(force_cancel_check)
     if config.get('output_list', False):
         print("输出命名对照表...")
         write_rename_list(dest, naming_rules, config.get('sort_by', 'name'),
@@ -808,11 +865,11 @@ def main_from_config(config, on_progress=None, cancel_check=None, force_cancel_c
                             only_dirs=created_dirs)
     print("重命名完成。")
     if _check_cancel(cancel_check):
-        return
+        return _cancel_status(force_cancel_check)
     if config.get('first_compress', True):
         print("开始分组压缩...")
         first_suffix = '-First' if config.get('double_compress', True) else ''
-        group_compress(
+        return group_compress(
             dest_root=dest,
             group_size=config['group_size'],
             password=config['password'],
@@ -834,9 +891,9 @@ def main_from_config(config, on_progress=None, cancel_check=None, force_cancel_c
             only_dirs=created_dirs,
             force_cancel_check=force_cancel_check,
         )
-        print("所有任务完成！")
     else:
         print("压缩已禁用，仅完成分类与重命名。")
+        return "completed"
 
 
 def cli():

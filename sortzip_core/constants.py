@@ -35,7 +35,7 @@ _RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | \
     {f"COM{i}" for i in range(1, 10)} | \
     {f"LPT{i}" for i in range(1, 10)}
 
-# ---- 断点续传 ----
+# ---- 恢复任务 ----
 RESUME_FILE_NAME = ".sortzip_resume.json"
 
 

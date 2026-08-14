@@ -14,12 +14,13 @@ from PySide6.QtCore import Qt, QThread, Slot, Signal, QTimer, QSettings, QUrl
 from PySide6.QtGui import QIcon, QTextCursor, QDesktopServices
 
 from sortzip_core.constants import EXT_CATEGORIES, DARK_QSS, RENAME_PRESETS, validate_win_folder_name, RESUME_FILE_NAME
-from sortzip_core.engine import _match_rule, check_naming_conflicts, render_template, _sort_files, _load_checkpoint, _checkpoint_path
+from sortzip_core.engine import _match_rule, check_naming_conflicts, render_template, _sort_files, _load_checkpoint, _checkpoint_path, validate_resume_files
 from sortzip_core import __version__
 from sortzip_core.widgets import (
     resource_path, show_styled_dialog, show_stats_dialog,
     show_manual_dialog, show_conflict_dialog,
     ReorderableTable, DropLineEdit, DropResumeButton, Worker,
+    PasswordDialog, validate_password,
 )
 
 
@@ -35,6 +36,8 @@ class UpdateChecker(QThread):
     check_done = Signal(str)
 
     def run(self):
+        if self.isInterruptionRequested():
+            return
         try:
             import json
             import urllib.request
@@ -42,9 +45,11 @@ class UpdateChecker(QThread):
             req = urllib.request.Request(url, headers={"User-Agent": "SortZip"})
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read().decode())
-                self.check_done.emit(data.get("tag_name", ""))
+                if not self.isInterruptionRequested():
+                    self.check_done.emit(data.get("tag_name", ""))
         except Exception:
-            self.check_done.emit("")
+            if not self.isInterruptionRequested():
+                self.check_done.emit("")
 
 
 def _compare_versions(v1, v2):
@@ -512,9 +517,9 @@ class MainWindow(QMainWindow):
         self.cancel_btn = QPushButton("取消")
         self.cancel_btn.setMinimumHeight(40)
         self.cancel_btn.setEnabled(False)
-        self.resume_btn = DropResumeButton("继续任务（导入断点）")
+        self.resume_btn = DropResumeButton("恢复任务（导入断点）")
         self.resume_btn.setMinimumHeight(40)
-        self.resume_btn.setToolTip("导入 .sortzip_resume.json 断点文件，从中断处继续压缩\n支持点击选择或直接拖入文件")
+        self.resume_btn.setToolTip("导入 .sortzip_resume.json 断点文件，从中断处恢复压缩\n支持点击选择或直接拖入文件")
         self.resume_btn.setAcceptDrops(True)
         progress_row.addWidget(self.run_btn)
         progress_row.addWidget(self.cancel_btn)
@@ -1324,17 +1329,9 @@ class MainWindow(QMainWindow):
         if not config['src'] or not os.path.isdir(config['src']):
             show_styled_dialog(self, "错误", "请选择有效的输入文件夹")
             return
-        if config['password'] and len(config['password']) < 8:
-            show_styled_dialog(self, "密码格式错误",
-                               "压缩密码至少需要 8 位字符\n"
-                               "支持字母、数字和特殊符号\n"
-                               "如不需要密码请留空",
-                               width=320, height=180)
-            return
-        if config['password'] != self.password_confirm_edit.text():
-            show_styled_dialog(self, "密码不一致",
-                               "两次输入的压缩密码不一致\n请重新输入",
-                               width=300, height=160)
+        err = validate_password(config['password'], self.password_confirm_edit.text())
+        if err:
+            show_styled_dialog(self, err[0], err[1])
             return
 
         custom_names = config.get('custom_names', {})
@@ -1507,7 +1504,7 @@ class MainWindow(QMainWindow):
             dlg = QDialog(self)
             dlg.setWindowTitle("任务已完成")
             layout = QVBoxLayout(dlg)
-            lbl = QLabel("该断点文件中的所有分组均已完成，无需续传。\n是否删除该断点文件？")
+            lbl = QLabel("该断点文件中的所有分组均已完成，无需恢复。\n是否删除该断点文件？")
             lbl.setWordWrap(True)
             layout.addWidget(lbl)
             btn_row = QHBoxLayout()
@@ -1530,14 +1527,46 @@ class MainWindow(QMainWindow):
         password = ""
         if self.settings.value("remember_pwd", False, type=bool):
             password = self.settings.value("password", "")
+        problems = validate_resume_files(checkpoint_path)
+        if problems:
+            shown = problems[:8]
+            extra = len(problems) - len(shown)
+            msg = ("检测到断点引用的源文件存在问题：\n\n"
+                   + "\n".join("• " + p for p in shown))
+            if extra > 0:
+                msg += f"\n… 等共 {len(problems)} 项"
+            msg += ("\n\n继续恢复将跳过存在问题的分组，已完成的压缩包不受影响。\n"
+                    "如需放弃恢复，请点击「取消恢复」。")
+            dlg = QDialog(self)
+            dlg.setWindowTitle("检测到文件异常")
+            layout = QVBoxLayout(dlg)
+            title_lbl = QLabel("检测到文件异常")
+            title_lbl.setStyleSheet("font-size: 14px; font-weight: bold;")
+            title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(title_lbl)
+            msg_lbl = QLabel(msg)
+            msg_lbl.setWordWrap(True)
+            msg_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            layout.addWidget(msg_lbl)
+            btn_row = QHBoxLayout()
+            cancel_btn = QPushButton("取消恢复")
+            cancel_btn.clicked.connect(dlg.reject)
+            continue_btn = QPushButton("仍然继续")
+            continue_btn.setStyleSheet("background: #0078d4; color: white; padding: 4px 16px;")
+            continue_btn.clicked.connect(dlg.accept)
+            btn_row.addWidget(cancel_btn)
+            btn_row.addWidget(continue_btn)
+            layout.addLayout(btn_row)
+            dlg.setFixedSize(460, 340)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
         if not self._confirm_resume(checkpoint_path, cfg, groups, pending):
             return
-        text, ok = QInputDialog.getText(
-            self, "输入密码", "请输入压缩密码（原任务如有密码）：",
-            QLineEdit.EchoMode.Password, password)
-        if not ok:
+        hint = "原任务已设置密码" if cfg.get('password') else "原任务无密码，可留空"
+        dlg = PasswordDialog(self, initial=password, hint=hint)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        password = text if text else ""
+        password = dlg.password()
 
         config = {
             'resume_from': checkpoint_path,
@@ -1558,11 +1587,11 @@ class MainWindow(QMainWindow):
                f"后缀: {cfg.get('archive_suffix', '.zipp')}\n"
                f"二次打包: {'开启' if cfg.get('double_compress', True) else '关闭'}\n"
                f"校验完整性: {'开启' if cfg.get('verify', False) else '关闭'}\n\n"
-               f"续传将以断点文件中的配置为准。")
+               f"恢复将以断点文件中的配置为准。")
         dlg = QDialog(self)
-        dlg.setWindowTitle("确认续传")
+        dlg.setWindowTitle("确认恢复")
         layout = QVBoxLayout(dlg)
-        title_lbl = QLabel("续传确认")
+        title_lbl = QLabel("恢复确认")
         title_lbl.setStyleSheet("font-size: 14px; font-weight: bold;")
         title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_lbl)
@@ -1573,7 +1602,7 @@ class MainWindow(QMainWindow):
         btn_row = QHBoxLayout()
         cbtn = QPushButton("取消")
         cbtn.clicked.connect(dlg.reject)
-        obtn = QPushButton("确认续传")
+        obtn = QPushButton("确认恢复")
         obtn.setStyleSheet("background: #0078d4; color: white; padding: 4px 16px;")
         obtn.clicked.connect(dlg.accept)
         btn_row.addWidget(cbtn)
@@ -1596,6 +1625,7 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker.finished.connect(self._save_settings)
         self.worker.finished.connect(self._on_finished)
+        self.thread.finished.connect(self._on_thread_finished)
         self.thread.finished.connect(self.thread.deleteLater)
         self.worker.log.connect(self._append_log)
         self.worker.error.connect(lambda e: self._append_log(f"[错误] {e}"))
@@ -1617,8 +1647,13 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(100)
         self.progress_bar.setFormat("完成  [100%]")
         stats = self.worker.stats if self.worker else {}
+        status = self.worker.status if self.worker else "completed"
         dest_path = getattr(self, '_last_dest_path', '')
-        show_stats_dialog(self, stats, dest_path=dest_path)
+        show_stats_dialog(self, stats, dest_path=dest_path, status=status)
+
+    def _on_thread_finished(self):
+        self.thread = None
+        self.worker = None
 
     @Slot(str)
     def _append_log(self, text):
@@ -1637,6 +1672,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._save_settings()
+        checker = getattr(self, '_update_checker', None)
+        if checker is not None and checker.isRunning():
+            checker.requestInterruption()
+            checker.wait(6000)
         super().closeEvent(event)
 
 
