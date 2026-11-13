@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>SortZip</title>
+  <rect x="3" y="3" width="58" height="58" rx="14" fill="#1858C7"/>
+  <path fill="#FFF" d="M15 19a4 4 0 0 1 4-4h8l5 5h13a4 4 0 0 1 4 4v21a4 4 0 0 1-4 4H19a4 4 0 0 1-4-4z"/>
+  <path fill="#1858C7" d="M32 20h5v6h-5zm5 6h5v6h-5zm-5 6h5v6h-5z"/>
+  <rect x="34" y="37" width="9" height="8" rx="2.5" fill="#1858C7"/>
+  <path d="M37 41h3" stroke="#FFF" stroke-width="1.5" stroke-linecap="round"/>
+</svg>

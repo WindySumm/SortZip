@@ -1,4 +1,4 @@
-# SortZip
+# <img src="docs/images/sortzip.svg" width="40" height="40" alt=""> SortZip
 
 SortZip 是一个 Windows 文件整理工具。按扩展名分目录，按规则批量改名，在同一个工作台预览结果，再按需分组压缩。适合整理下载目录、归档项目资料，或把一批文件分成便于交付的多个压缩包。
 
