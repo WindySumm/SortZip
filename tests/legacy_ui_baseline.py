@@ -80,7 +80,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setFont(QFont('Microsoft YaHei UI',10))
         self.setWindowTitle(f"SortZip {__version__} - 文件整理与压缩")
-        icon_path = resource_path("icon.ico")
+        icon_path = resource_path("assets/sortzip.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
         self.setMinimumSize(640, 600)

@@ -8,7 +8,7 @@ SortZip 是一个 Windows 文件整理工具。按扩展名分目录，按规则
 
 ## 下载与运行
 
-在 GitHub Releases 选择所需版本，下载并运行 `SortZip.exe`。分类和重命名可直接使用。需要压缩时，安装下列任一工具，然后在「最终输出」选择。程序路径可在右上角菜单的「设置」中指定并检测。
+在 GitHub Releases 选择所需版本，下载并运行对应的 EXE，例如 `SortZip-v1.0.0.exe`。分类和重命名可直接使用。需要压缩时，安装下列任一工具，然后在「最终输出」选择。程序路径可在右上角菜单的「设置」中指定并检测。
 
 | 压缩工具 | SortZip 支持的格式 | 支持加密与分卷的格式 |
 | --- | --- | --- |
@@ -16,7 +16,7 @@ SortZip 是一个 Windows 文件整理工具。按扩展名分目录，按规则
 | [7-Zip](https://www.7-zip.org/) · `7z.exe` | ZIP、7Z | ZIP、7Z |
 | [WinRAR](https://www.rarlab.com/) · `Rar.exe` | RAR5 | RAR5 |
 
-一个任务的所有压缩层共用同一工具，各层可以选用该工具支持的不同格式。GZ 和 XZ 每包只能包含一个实体文件。发布页若附有 `SortZip.exe.sha256`，可在下载目录运行 `Get-FileHash .\SortZip.exe -Algorithm SHA256`，将结果与校验文件比对。
+一个任务的所有压缩层共用同一工具，各层可以选用该工具支持的不同格式。GZ 和 XZ 每包只能包含一个实体文件。发布页若附有 `.sha256` 文件，可在下载目录运行 `Get-FileHash .\SortZip-v1.0.0.exe -Algorithm SHA256`，将结果与校验文件比对。
 
 ## 第一次使用
 

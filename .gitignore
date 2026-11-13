@@ -5,6 +5,7 @@ __pycache__/
 
 # PyInstaller
 build/
+/dist/
 *.spec
 !/SortZip.spec
 
@@ -30,3 +31,5 @@ test/
 # Isolated development environment and validation artifacts
 /.venv/
 /.build-validation/
+/release/
+/skills-lock.json

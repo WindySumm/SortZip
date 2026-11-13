@@ -168,7 +168,9 @@ class WorkbenchTests(unittest.TestCase):
         from sortzip_core.smoke import _MemoryCredentials
         global _application
         _application = QApplication.instance() or QApplication([])
-        self.temp = tempfile.TemporaryDirectory(dir=Path(__file__).parent/'__pycache__')
+        scratch = Path(__file__).parent/'__pycache__'
+        scratch.mkdir(exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(dir=scratch)
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.settings = QSettings(str(self.root/'settings.ini'),QSettings.Format.IniFormat)

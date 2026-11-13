@@ -17,7 +17,9 @@ from sortzip_core.workspace_planning import inspect_resume
 
 class TaskRecoveryTests(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory(dir=Path(__file__).parent/'__pycache__')
+        scratch = Path(__file__).parent/'__pycache__'
+        scratch.mkdir(exist_ok=True)
+        temporary = tempfile.TemporaryDirectory(dir=scratch)
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         self.source = self.root/'input'

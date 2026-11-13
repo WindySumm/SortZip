@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('icon.ico', '.'), ('sortzip_core/restore_names.ps1', 'sortzip_core')],
+    datas=[('assets/sortzip.ico', 'assets'), ('sortzip_core/restore_names.ps1', 'sortzip_core')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -35,5 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['icon.ico'],
+    icon=['assets/sortzip.ico'],
 )

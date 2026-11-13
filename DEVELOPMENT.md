@@ -6,7 +6,7 @@
 
 布局优先通过结构表达含义，减少不必要的次级标签和说明。滑块使用覆盖层，不通过预留滚动条槽改变布局；左侧选中背景完整铺满。修改必须保留分类、命名、多层参数、预览、执行、取消和恢复的原行为。
 
-每次功能或操作变化同步 README、CHANGELOG 的 Unreleased 和内置手册；无用户可见变化时只更新适用记录。大版本合为一次本地版本提交，需用户明确下令；提交、推送和发布分别授权。日常改动留在工作区，本地目标书继续忽略，验证产物写入 `.build-validation/`，不覆盖 `dist/SortZip.exe`。
+每次功能或操作变化同步 README、CHANGELOG 的 Unreleased 和内置手册；无用户可见变化时只更新适用记录。大版本合为一次本地版本提交，需用户明确下令；提交、推送和发布分别授权。验证产物写入 `.build-validation/`，发布附件保存在 `release/`。
 
 沿用的验证基线为 244 项完整回归（含融合式界面测试）；这是上一阶段证据，不自动代表后续新增行为已验收。原生验收范围与缺口单独记录在迁移基线中。
 
@@ -48,6 +48,19 @@
 
 ## 环境与安装
 
+```text
+SortZip/
+├─ sortzip_core/        应用源码和运行资源
+├─ assets/              Windows 图标
+├─ docs/                公开文档、README 图片及 Logo 源图
+├─ tests/               可重复运行的测试
+├─ scripts/             打包、手动验收和性能基准入口
+├─ .build-validation/  本地验证报告与按需生成的素材
+└─ release/             发布用 EXE 和 SHA-256 校验文件
+```
+
+Git 跟踪源码、文档、资源和测试脚本。`.build-validation/`、`release/` 和 `.venv/` 只供本地使用。
+
 当前验证基线为 **Windows 11 x64、CPython 3.14.2、PySide6 6.11.1、Bandizip 7.46.0.1**。打包工具为 PyInstaller 6.22.3。其他组合尚未完成同等验证。
 
 在项目根目录使用 PowerShell：
@@ -59,7 +72,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe main.py
 ```
 
-只运行源码、不打包时可安装 `requirements.txt`。开发依赖文件固定了验证过的打包依赖版本；测试框架使用标准库 `unittest`。无需激活虚拟环境，也无需修改 PowerShell 执行策略。
+只运行源码时安装 `requirements.txt`，其中 `PySide6-Essentials` 提供应用和测试使用的 Qt 模块。打包使用 `requirements-dev.txt`。已有完整 PySide6 环境也可运行。如需精简，先卸载 `PySide6` 和 `PySide6-Addons`，再用 `pip install --force-reinstall -r requirements-dev.txt` 补齐共用文件。
 
 真实压缩需要安装 Bandizip，并确保 `Bandizip.exe` 与 `bz.exe` 可在 PATH 中找到。应用正常运行调用 `bandizip`，自动集成测试调用控制台版 `bz`。Windows 凭据接口通过标准库 ctypes 调用，不依赖额外密码库。
 
@@ -86,7 +99,7 @@ try {
 
 完整集成测试需要正常用户的 Windows 凭据访问权限；某些沙箱会拒绝真实凭据测试。测试使用随机目标 `SortZip/Test/<UUID>` 并清理，不读取应用的真实密码。GUI 使用独立 INI、内存凭据或模拟存储，并禁用/模拟更新检查。
 
-测试生成素材位于 `tests/__pycache__/` 下的独立临时目录，结束后清理。默认回归中唯一真实子进程测试会启动当前 Python 的短时等待进程，再验证强制取消；不使用批处理子进程树。不要直接执行本地 `test/自动化测试` 旧脚本，它们仍保留原样，可能包含绝对路径和旧素材清理逻辑。
+自动化测试在独立临时目录生成素材，结束后清理。旧 `test/` 脚本的覆盖已迁入 `tests/`，对应关系见下表。手动验收和性能基准可用 `scripts/` 下的工具重新生成素材。完成检查后，可清理 `.build-validation/` 内生成的素材、缓存和临时 EXE。`preview-benchmark.json` 可保留用于历史性能对照。
 
 | 旧脚本范围 | 可提交测试中的对应覆盖 |
 |---|---|
@@ -170,19 +183,19 @@ Get-Content .build-validation\source-smoke.json
 
 成功报告包含 `status: ok`、版本、4 个共享编辑页、单层初始状态、真实后台预览及可用格式。该入口使用临时 INI 和内存凭据，检查窗口、图标和执行计划加载；不能替代文件处理及完整 GUI 回归。
 
-构建临时验证 EXE：
+构建发布用 EXE：
 
 ```powershell
 .\scripts\build.ps1
 ```
 
-`scripts/build.ps1` 从项目根目录调用 `SortZip.spec`。打包配置统一收录应用图标和后缀还原脚本。候选程序与 `SortZip.exe.sha256` 一起保存至 `.build-validation/dist/`。默认使用 `.venv`，也可通过 `-Python` 指定解释器。构建期间将 PATH 临时收敛为 Python 和 Windows 系统目录，结束后恢复，避免其他软件的旧运行库混入产物。脚本使用 [PyInstaller 官方工具](https://pyinstaller.org/en/stable/)完成打包。
+`scripts/build.ps1` 从项目根目录调用 `SortZip.spec`，使用项目版本生成 `release/SortZip-v<版本>.exe` 和对应的 `.sha256`。冻结启动检查通过后才替换同版本成品。报告保存在 `.build-validation/`，临时 EXE 和构建缓存会自动清理。默认使用 `.venv`，也可通过 `-Python` 指定解释器。脚本使用 [PyInstaller](https://pyinstaller.org/en/stable/)打包应用图标和后缀还原脚本，构建时临时收敛 PATH，避免混入其他软件的旧运行库。
 
 验证冻结后的启动：
 
 ```powershell
 $report = Join-Path (Get-Location) '.build-validation\frozen-smoke.json'
-$process = Start-Process -FilePath '.\.build-validation\dist\SortZip.exe' `
+$process = Start-Process -FilePath '.\release\SortZip-v1.0.0.exe' `
     -ArgumentList @('--smoke-test', ('"' + $report + '"')) `
     -WindowStyle Hidden -Wait -PassThru
 $process.ExitCode
@@ -190,6 +203,8 @@ Get-Content $report
 ```
 
 干净环境验收时复制同一份候选 EXE 和校验文件，用 `Get-FileHash -Algorithm SHA256` 确认一致。在该环境中设置 `SORTZIP_SMOKE_TOOL` 为 `missing`、`bandizip`、`7zip` 或 `winrar`。多工具场景把 `SORTZIP_SMOKE_DETECTED` 设为以逗号分隔的工具名，例如 `bandizip,7zip,winrar`，并通过 `SORTZIP_SMOKE_TOOL` 选择本次使用的工具。检查包含旧偏好迁移、分类取消恢复、旧多层断点恢复、后缀还原脚本、分卷逐层解包及 `List.txt` 入口核对。最终发布使用通过验收的同一份产物。
+
+将 `release/` 中验收通过的 EXE 和校验文件作为附件上传到 GitHub Releases。应用和打包共用 `assets/sortzip.ico`，README 使用 `docs/images/sortzip.svg`。
 
 检查退出码为 0、报告状态为 `ok`。本地环境及临时构建产物均已忽略；验证成功不表示已发布新版本。正常发布前仍需维护 README、CHANGELOG 与内置使用手册，并核对版本对应的实际修改。
 

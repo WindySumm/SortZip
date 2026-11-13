@@ -137,7 +137,7 @@ def run_smoke_test(report_path):
             try:
                 if window.pages.count() != 4 or window.windowIcon().isNull():
                     raise RuntimeError('窗口页面或图标加载失败')
-                if not Path(resource_path('icon.ico')).is_file():
+                if not Path(resource_path('assets/sortzip.ico')).is_file():
                     raise RuntimeError('打包图标资源缺失')
                 from sortzip_core import restore_bundle
                 if not Path(restore_bundle.__file__).with_name('restore_names.ps1').is_file():

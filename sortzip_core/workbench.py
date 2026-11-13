@@ -46,7 +46,7 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         self.timer.stop()
         self._loading = True
         self.setWindowTitle('SortZip')
-        self.setWindowIcon(QIcon(resource_path('icon.ico')))
+        self.setWindowIcon(QIcon(resource_path('assets/sortzip.ico')))
         self.native_caption = NativeCaption(self,self._append_log)
         self.layout().setContentsMargins(16,0,16,12)
         self.notice.setText('分类 → 原文件命名 → 逐层压缩。预览只读，确认执行后才处理真实文件。')
