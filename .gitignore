@@ -6,6 +6,7 @@ __pycache__/
 # PyInstaller
 build/
 *.spec
+!/SortZip.spec
 
 # IDE
 .vscode/
@@ -22,3 +23,10 @@ Thumbs.db
 
 # Local test folder (do not commit)
 test/
+
+# Local development roadmap (do not commit)
+/DEVELOPMENT_ROADMAP.md
+
+# Isolated development environment and validation artifacts
+/.venv/
+/.build-validation/

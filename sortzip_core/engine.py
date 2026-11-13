@@ -1,13 +1,20 @@
 import json
+import os
 import re
 import shutil
 import subprocess
 import unicodedata
+import uuid
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
-from sortzip_core.constants import RESUME_FILE_NAME
+from sortzip_core.constants import RESUME_FILE_NAME, validate_win_folder_name
 from sortzip_core import __version__
+from sortzip_core.config import prepare_config
+from sortzip_core.formats import FORMATS, validate_compression, validate_volume, final_suffix
+# Compatibility exports for existing scripts using engine's original helper names.
+from sortzip_core.planning import (SORT_FUNCS, _natural_key, _sort_files, build_execution_plan,
+                                  render_template, _match_rule, _match_rule_hierarchy, check_naming_conflicts)
 
 SEP = "\t"
 
@@ -16,27 +23,42 @@ class ForceCancelled(Exception):
     pass
 
 
+def redact(text, password):
+    return str(text).replace(password, '********') if password else str(text)
+
+
+def _command_text(cmd):
+    return ' '.join('密码:********' if arg.startswith('-p') else arg for arg in cmd)
+
+
 def _run_proc(cmd, force_cancel_check=None, wait_ms=200):
-    """Run a subprocess, polling every `wait_ms` ms for force-cancel."""
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    """Run a command unattended, polling every `wait_ms` ms for force-cancel."""
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                            creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding='utf-8', errors='replace')
     while True:
+        if force_cancel_check and force_cancel_check():
+            if proc.poll() is None:
+                proc.kill()
+            proc.communicate()
+            raise ForceCancelled()
         try:
             stdout, stderr = proc.communicate(timeout=wait_ms / 1000.0)
             break
         except subprocess.TimeoutExpired:
-            if force_cancel_check and force_cancel_check():
-                proc.kill()
-                proc.communicate()
-                raise ForceCancelled()
+            continue
+    if force_cancel_check and force_cancel_check():
+        raise ForceCancelled()
+    password = next((arg[2:] for arg in cmd[2:] if arg.startswith('-p')), '')
+    stdout, stderr = redact(stdout,password), redact(stderr,password)
+    if password.startswith(':'):
+        # Bandizip uses -p:VALUE. Other tools can pass a password starting with a colon.
+        stdout, stderr = redact(stdout,password[1:]), redact(stderr,password[1:])
     if proc.returncode != 0:
-        raise subprocess.CalledProcessError(proc.returncode, cmd, stdout, stderr)
+        safe_cmd = ['-p:********' if arg.startswith('-p') else arg for arg in cmd]
+        raise subprocess.CalledProcessError(proc.returncode, safe_cmd, stdout, stderr)
     return stdout, stderr
-
-
-def _natural_key(f):
-    parts = re.split(r'(\d+)', f.name)
-    return [int(p) if p.isdigit() else p.lower() for p in parts]
 
 
 def _check_cancel(cancel_check):
@@ -52,25 +74,6 @@ def _cancel_status(force_cancel_check):
     return "safe_cancelled"
 
 
-SORT_FUNCS = {
-    'name':        _natural_key,
-    'name_desc':   _natural_key,
-    'mtime':       lambda f: f.stat().st_mtime,
-    'mtime_desc':  lambda f: (-f.stat().st_mtime, f.name),
-    'size_asc':    lambda f: f.stat().st_size,
-    'size_desc':   lambda f: (-f.stat().st_size, f.name),
-    'ext':         lambda f: f.suffix,
-}
-
-
-def _sort_files(files, sort_by):
-    fn = SORT_FUNCS.get(sort_by)
-    if fn is None:
-        fn = SORT_FUNCS['name']
-    reverse = sort_by == 'name_desc'
-    files.sort(key=fn, reverse=reverse)
-
-
 def _dedup_name(dest_dir, stem, ext):
     name = f"{stem}{ext}"
     counter = 0
@@ -81,14 +84,33 @@ def _dedup_name(dest_dir, stem, ext):
 
 
 def classify_files(src_dir, dest_root, custom_names=None, on_progress=None, cancel_check=None,
-                   keep_files=False, recursive=False, keep_hierarchy=False):
+                   keep_files=False, recursive=False, keep_hierarchy=False, execution_plan=None):
     src_path = Path(src_dir)
     dest_root = Path(dest_root)
+    if execution_plan is not None:
+        created_dirs = set()
+        for idx, entry in enumerate(execution_plan, 1):
+            if _check_cancel(cancel_check):
+                break
+            current = entry['source'].stat()
+            if current.st_size != entry['size'] or current.st_mtime_ns != entry['mtime_ns']:
+                raise ValueError(f"分类前源文件发生变化：{entry['source_rel']}")
+            target_dir = dest_root / entry['folder']
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target = target_dir / entry['classified_name']
+            if target.exists() or target.is_symlink():
+                raise FileExistsError(f'分类目标已存在：{target}')
+            (shutil.copy2 if keep_files else shutil.move)(str(entry['source']), str(target))
+            print(f"{'复制' if keep_files else '移动'}: {entry['source_rel']} -> {target}")
+            created_dirs.add(target_dir)
+            if on_progress:
+                on_progress(idx, len(execution_plan), f"分类: {entry['source_rel']}")
+        return created_dirs
     dest_root.mkdir(parents=True, exist_ok=True)
     if recursive:
-        files = [f for f in src_path.rglob('*') if f.is_file() and f.name != RESUME_FILE_NAME]
+        files = [f for f in src_path.rglob('*') if f.is_file() and f.name.casefold() != RESUME_FILE_NAME]
     else:
-        files = [f for f in src_path.iterdir() if f.is_file() and f.name != RESUME_FILE_NAME]
+        files = [f for f in src_path.iterdir() if f.is_file() and f.name.casefold() != RESUME_FILE_NAME]
     total = len(files)
     created_dirs = set()
     for idx, file_path in enumerate(files, start=1):
@@ -119,58 +141,6 @@ def classify_files(src_dir, dest_root, custom_names=None, on_progress=None, canc
         if on_progress:
             on_progress(idx, total, f"分类: {file_path.name}")
     return created_dirs
-
-
-def render_template(template, idx, ext, folder_name, original_name):
-    if not template:
-        return None
-    return template.replace('{n}', str(idx)) \
-                   .replace('{ext}', ext) \
-                   .replace('{folder}', folder_name) \
-                   .replace('{original}', original_name)
-
-
-def _match_rule(naming_rules, folder_name):
-    if not naming_rules:
-        return None
-    for rule in naming_rules:
-        if not rule.get('enable', True):
-            continue
-        match = rule.get('match_folder', '')
-        if match == '*' or match == folder_name:
-            return rule
-    return None
-
-
-def _match_rule_hierarchy(naming_rules, folder, root=None):
-    """Walk up ancestors to find a matching naming rule."""
-    if not naming_rules:
-        return None
-    walk = folder
-    root = Path(root) if root else None
-    while True:
-        rule = _match_rule(naming_rules, walk.name)
-        if rule:
-            return rule
-        if root is not None and walk == root:
-            break
-        if walk.parent == walk:
-            break
-        walk = walk.parent
-    return None
-
-
-def check_naming_conflicts(folder_name, files, template):
-    conflicts = []
-    seen = {}
-    for idx, file_path in enumerate(files, start=1):
-        new_name = render_template(template, idx, file_path.suffix,
-                                   folder_name, file_path.stem)
-        if new_name in seen:
-            conflicts.append((seen[new_name], file_path.name, new_name))
-        else:
-            seen[new_name] = file_path.name
-    return conflicts
 
 
 def _disp_len(text):
@@ -211,6 +181,11 @@ def _wrap_text(text, width):
 
 def _collect_dirs(root, keep_hierarchy=False, only_dirs=None):
     root = Path(root)
+    if only_dirs is not None:
+        resolved_root = root.resolve()
+        return sorted((Path(d) for d in only_dirs if Path(d).is_dir()
+                       and Path(d).resolve().is_relative_to(resolved_root)
+                       and (keep_hierarchy or Path(d).parent == root)), key=lambda d: d.relative_to(root))
     if keep_hierarchy:
         dirs = []
         for f in root.rglob('*'):
@@ -227,7 +202,22 @@ def _collect_dirs(root, keep_hierarchy=False, only_dirs=None):
 
 
 def write_rename_list(dest_root, naming_rules, sort_by='name', group_size=1, archive_suffix='.zip',
-                      compression_enabled=True, keep_hierarchy=False, only_dirs=None):
+                      compression_enabled=True, keep_hierarchy=False, only_dirs=None, execution_plan=None):
+    if execution_plan is not None:
+        import csv
+        by_folder = {}
+        for entry in execution_plan:
+            by_folder.setdefault(entry['folder'], []).append(entry)
+        folders = sorted(by_folder)
+        for folder in folders:
+            path = Path(dest_root) / folder / 'List.txt'
+            with path.open('x', encoding='utf-8', newline='') as stream:
+                writer = csv.writer(stream, delimiter='\t')
+                writer.writerow(['序号', '原文件名', '新文件名'] + (['所属压缩包名'] if compression_enabled else []))
+                for entry in by_folder[folder]:
+                    writer.writerow([entry['index'], entry['source_rel'], entry['target_name']] +
+                                    ([entry['archive']] if compression_enabled else []))
+        return
     if compression_enabled:
         COL_W = (4, 24, 24, 24)
         HEADERS = ("序号", "原文件名", "新文件名", "所属压缩包名")
@@ -236,7 +226,7 @@ def write_rename_list(dest_root, naming_rules, sort_by='name', group_size=1, arc
         HEADERS = ("序号", "原文件名", "新文件名")
     dest_root = Path(dest_root)
     for folder in _collect_dirs(dest_root, keep_hierarchy, only_dirs):
-        files = [f for f in folder.iterdir() if f.is_file() and f.name != RESUME_FILE_NAME]
+        files = [f for f in folder.iterdir() if f.is_file() and f.name.casefold() != RESUME_FILE_NAME]
         if not files:
             continue
         if keep_hierarchy:
@@ -288,70 +278,102 @@ def write_rename_list(dest_root, naming_rules, sort_by='name', group_size=1, arc
 
 
 def rename_files_in_folders(dest_root, sort_by='name', on_progress=None, cancel_check=None,
-                            naming_rules=None, keep_hierarchy=False, preview_order=None, only_dirs=None):
+                            naming_rules=None, keep_hierarchy=False, preview_order=None, only_dirs=None,
+                            execution_plan=None, stats=None):
     dest_root = Path(dest_root)
     folders = _collect_dirs(dest_root, keep_hierarchy, only_dirs)
     done = 0
     total = 0
     for folder in folders:
-        total += len([f for f in folder.iterdir() if f.is_file() and f.name not in ('List.txt', RESUME_FILE_NAME)])
+        total += len([f for f in folder.iterdir() if f.is_file() and f.name.casefold() not in ('list.txt', RESUME_FILE_NAME)])
+    if execution_plan is not None:
+        total = len(execution_plan)
     folder_order = {}
+    by_folder = {}
+    if execution_plan is not None:
+        for entry in execution_plan:
+            by_folder.setdefault(dest_root / entry['folder'], []).append(entry)
     for folder in folders:
         if _check_cancel(cancel_check):
             return None
-        files = [f for f in folder.iterdir() if f.is_file() and f.name not in ('List.txt', RESUME_FILE_NAME)]
+        files = [f for f in folder.iterdir() if f.is_file() and f.name.casefold() not in ('list.txt', RESUME_FILE_NAME)]
+        planned = None
+        if execution_plan is not None:
+            planned = by_folder.get(folder, [])
+            files = [folder / e['classified_name'] for e in planned]
         if not files:
             continue
-        if preview_order and folder.name in preview_order:
+        if planned is not None:
+            pass
+        elif preview_order and folder.name in preview_order:
             ordered = preview_order[folder.name]
             name_map = {f.name: f for f in files}
-            files = [name_map[n] for n in ordered if n in name_map]
-            files += [f for f in files if f.name not in ordered]
+            files = [name_map[n] for n in ordered if n in name_map] + [f for f in files if f.name not in ordered]
         else:
             _sort_files(files, sort_by)
         if keep_hierarchy:
             rule = _match_rule_hierarchy(naming_rules, folder, dest_root) if naming_rules else None
         else:
             rule = _match_rule(naming_rules, folder.name) if naming_rules else None
-        if not rule:
+        if not rule and planned is None:
             print(f"跳过重命名（未匹配规则）: {folder.name}")
             done += len(files)
             folder_order[folder] = files[:]
             continue
-        template = rule.get('template', '')
-        rename_map = {}
-        renamed_order = []
-        for idx, file_path in enumerate(files, start=1):
-            new_name = render_template(template, idx, file_path.suffix,
-                                       folder.name, file_path.stem)
-            if not new_name:
-                continue
-            new_path = folder / new_name
-            rename_map[file_path] = new_path
-        for src, dst in rename_map.items():
-            if _check_cancel(cancel_check):
-                return None
-            if src == dst:
-                print(f"跳过（已命名正确）: {src.name}")
-                done += 1
-                continue
-            if dst.exists():
-                temp_name = dst.name + ".tmp"
-                temp_path = folder / temp_name
-                counter = 1
-                while temp_path.exists():
-                    temp_name = f"{dst.stem}.tmp{counter}{dst.suffix}"
-                    temp_path = folder / temp_name
-                    counter += 1
-                dst.rename(temp_path)
-                print(f"临时移动: {dst.name} -> {temp_name}")
-            src.rename(dst)
-            done += 1
-            renamed_order.append(dst)
-            print(f"重命名: {src.name} -> {dst.name}")
-            if on_progress:
-                on_progress(done, total, f"重命名: {src.name}")
-        folder_order[folder] = renamed_order
+        template = rule.get('template', '') if rule else ''
+        targets = ([folder / e['target_name'] for e in planned] if planned is not None else
+                   [folder / (render_template(template, idx, f.suffix, folder.name, f.stem) or f.name)
+                    for idx, f in enumerate(files, 1)])
+        keys = [p.name.casefold() for p in targets]
+        if len(set(keys)) != len(keys):
+            raise ValueError(f"重命名目标重复: {folder}")
+        sources = {p.name.casefold() for p in files}
+        for target in targets:
+            if (validate_win_folder_name(target.name) or target.parent != folder
+                    or target.name.casefold() == RESUME_FILE_NAME
+                    or (planned is None and target.name == 'List.txt')):
+                raise ValueError(f"无效重命名目标: {target}")
+            if target.exists() and target.name.casefold() not in sources:
+                raise ValueError(f"重命名目标已存在: {target}")
+        # Finish each directory as a transaction; cancellation is checked at its boundary.
+        staged = []
+        try:
+            for source, target in zip(files, targets):
+                if source.name == target.name:
+                    continue
+                temp = folder / f".sortzip_rename_{uuid.uuid4().hex}.tmp"
+                source.rename(temp)
+                staged.append([source, temp, target])
+            for entry in staged:
+                source, temp, target = entry
+                if target.exists():
+                    raise FileExistsError(f"重命名目标已存在: {target}")
+                temp.rename(target)
+                entry[1] = target
+        except OSError as error:
+            # Re-stage committed destinations before restoring originals (cycles are possible).
+            for entry in staged:
+                try:
+                    temp = folder / f".sortzip_rename_{uuid.uuid4().hex}.tmp"
+                    entry[1].rename(temp)
+                    entry[1] = temp
+                except OSError:
+                    pass
+            for source, current, target in staged:
+                try:
+                    if not source.exists():
+                        current.rename(source)
+                except OSError:
+                    pass
+            remaining = '; '.join(str(current) for _, current, _ in staged if current.exists())
+            raise OSError(f"重命名失败，文件已尽量回滚；保留位置: {remaining or folder}") from error
+        done += len(files)
+        if stats is not None:
+            stats['files_renamed'] += sum(source.name != target.name for source, target in zip(files, targets))
+        folder_order[folder] = targets
+        if on_progress:
+            on_progress(done, total, f"重命名: {folder.name}")
+        print(f"重命名完成: {folder} ({len(files)} 个文件)")
     return folder_order
 
 
@@ -379,12 +401,21 @@ def _checkpoint_path(dest_root):
 
 def _write_checkpoint(dest_root, data):
     path = _checkpoint_path(dest_root)
-    tmp = path.with_suffix(".tmp")
+    tmp = path.parent / f".sortzip_checkpoint_{uuid.uuid4().hex}.tmp"
     try:
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        with tmp.open('x', encoding='utf-8') as stream:
+            json.dump(data, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
         tmp.replace(path)
-    except OSError as e:
-        print(f"警告: 写入断点文件失败 {path}: {e}")
+    except OSError as error:
+        raise OSError(f"断点写入失败，已停止清理文件: {path}") from error
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def _load_checkpoint(path):
@@ -392,9 +423,74 @@ def _load_checkpoint(path):
     try:
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
+        _validate_checkpoint(data, path.parent)
         return data
-    except (OSError, ValueError) as e:
-        raise ValueError(f"断点文件无法读取或已损坏: {path}") from e
+    except (OSError, ValueError, TypeError) as e:
+        raise ValueError(f"断点文件无法读取或无效: {path}（{e}）") from e
+
+
+def _safe_relative(root, value, single=False):
+    if not isinstance(value, str) or not value or '\\' in value:
+        raise ValueError('断点路径无效')
+    win = PureWindowsPath(value)
+    if win.drive or win.root or '..' in win.parts or (single and len(win.parts) != 1):
+        raise ValueError('断点路径越界')
+    if any(validate_win_folder_name(part) for part in win.parts):
+        raise ValueError('断点路径名称无效')
+    candidate = root / value
+    if not candidate.resolve().is_relative_to(root.resolve()):
+        raise ValueError('断点路径越界')
+    return candidate
+
+
+def _validate_checkpoint(data, root):
+    if not isinstance(data, dict) or not isinstance(data.get('config'), dict) or not isinstance(data.get('groups'), list):
+        raise ValueError('断点结构无效')
+    cfg = data['config']
+    if not isinstance(cfg.get('archive_format', 'zip'), str) or cfg.get('archive_format', 'zip') not in FORMATS:
+        raise ValueError('断点压缩格式无效')
+    if type(cfg.get('group_size', 1)) is not int or cfg.get('group_size', 1) < 1:
+        raise ValueError('分组大小无效')
+    for key in ('password', 'double_compress', 'auto_close', 'enable_volume', 'verify', 'keep_hierarchy', 'keep_files'):
+        if key in cfg and type(cfg[key]) is not bool:
+            raise ValueError(f'断点配置类型无效: {key}')
+    validate_volume(cfg.get('volume'))
+    for key, default in (('archive_suffix', '.zipp'), ('first_suffix', '-First'), ('first_suffix_replace', None)):
+        value = cfg.get(key, default)
+        if key == 'first_suffix_replace' and value is None:
+            continue
+        if not isinstance(value, str) or (key != 'first_suffix' and not value):
+            raise ValueError(f'归档后缀无效: {key}')
+        if validate_win_folder_name('archive' + value) or any(c in value for c in '*?[]'):
+            raise ValueError(f'归档后缀无效: {key}')
+    seen_groups, seen_files = set(), set()
+    for group in data['groups']:
+        if not isinstance(group, dict) or group.get('state') not in ('pending', 'first_done', 'final_done'):
+            raise ValueError('断点分组状态无效')
+        folder = _safe_relative(root, group.get('folder'))
+        base = group.get('base_name')
+        if not isinstance(base, str) or not re.fullmatch(r'[1-9]\d*(?:-[1-9]\d*)?', base):
+            raise ValueError('断点归档名称无效')
+        identity = (str(folder.resolve()).casefold(), base)
+        if identity in seen_groups:
+            raise ValueError('断点包含重复分组')
+        seen_groups.add(identity)
+        files, sizes = group.get('files'), group.get('sizes', {})
+        mtimes = group.get('mtimes', {})
+        if not isinstance(mtimes, dict):
+            raise ValueError('断点修改时间记录无效')
+        if not isinstance(files, list) or not files or not isinstance(sizes, dict):
+            raise ValueError('断点源文件列表无效')
+        for name in files:
+            source = _safe_relative(folder, name, single=True)
+            key = str(source.resolve()).casefold()
+            if key in seen_files or name.casefold() == RESUME_FILE_NAME:
+                raise ValueError('断点源文件重复或为保留文件')
+            seen_files.add(key)
+        if any(name not in files or type(value) is not int for name, value in mtimes.items()):
+            raise ValueError('断点修改时间记录无效')
+        if any(name not in files or type(size) is not int or size < 0 for name, size in sizes.items()):
+            raise ValueError('断点文件大小记录无效')
 
 
 def _delete_checkpoint(dest_root):
@@ -408,16 +504,17 @@ def _delete_checkpoint(dest_root):
 
 
 def _resume_config_snapshot(group_size, password, volume_size, bandizip_path,
-                            double_compress, auto_close, sort_by, archive_suffix,
+                            double_compress, sort_by, archive_suffix,
                             first_suffix, enable_volume, first_suffix_replace,
-                            verify, keep_hierarchy):
+                            verify, keep_hierarchy, archive_format='zip'):
     return {
+        "archive_format": archive_format,
         "group_size": group_size,
         "password": bool(password),
         "volume": volume_size,
         "bandizip": bandizip_path,
         "double_compress": double_compress,
-        "auto_close": auto_close,
+        "auto_close": True,
         "sort_by": sort_by,
         "archive_suffix": archive_suffix,
         "first_suffix": first_suffix,
@@ -435,11 +532,13 @@ def _build_group_plan(dest_root, folders, all_groups):
         base_name = str(start_i + 1)
         if len(group) > 1:
             base_name = f"{start_i + 1}-{start_i + len(group)}"
+        metadata = {f.name: f.stat() for f in group}
         groups.append({
             "folder": rel,
             "base_name": base_name,
             "files": [f.name for f in group],
-            "sizes": {f.name: f.stat().st_size for f in group},
+            "sizes": {name: info.st_size for name, info in metadata.items()},
+            "mtimes": {name: info.st_mtime_ns for name, info in metadata.items()},
             "state": "pending",
         })
     return groups
@@ -453,6 +552,16 @@ def _find_group_files(dest_root, group):
         if p.exists():
             files.append(p)
     return files
+
+
+def _source_matches(path, group):
+    try:
+        info = path.stat()
+        return (path.is_file()
+                and (path.name not in group.get('sizes', {}) or info.st_size == group['sizes'][path.name])
+                and (path.name not in group.get('mtimes', {}) or info.st_mtime_ns == group['mtimes'][path.name]))
+    except OSError:
+        return False
 
 
 def validate_resume_files(checkpoint_path):
@@ -473,20 +582,27 @@ def validate_resume_files(checkpoint_path):
             problems.append(f"{label}: 文件夹不存在")
             continue
         sizes = g.get('sizes') or {}
+        mtimes = g.get('mtimes') or {}
         for name in g.get('files', []):
-            p = folder / name
-            if not p.is_file():
-                problems.append(f"{label}: 文件缺失: {name}")
-            elif name in sizes and p.stat().st_size != sizes[name]:
-                problems.append(f"{label}: 文件已被修改: {name}（大小不一致）")
+            path = folder / name
+            try:
+                info = path.stat()
+                if not path.is_file():
+                    problems.append(f"{label}: 文件缺失: {name}")
+                elif name in sizes and info.st_size != sizes[name]:
+                    problems.append(f"{label}: 文件已被修改: {name}（大小不一致）")
+                elif name in mtimes and info.st_mtime_ns != mtimes[name]:
+                    problems.append(f"{label}: 文件修改时间已变化: {name}")
+            except OSError:
+                problems.append(f"{label}: 文件缺失或无法读取: {name}")
     return problems
 
 
 def _compress_first(folder, base_name, files, password, bandizip_path, volume_size,
-                    auto_close, enable_volume, first_suffix, first_suffix_replace,
-                    force_cancel_check):
+                    enable_volume, first_suffix, first_suffix_replace,
+                    force_cancel_check, archive_format='zip'):
     first_name = f"{base_name}{first_suffix}"
-    zip_path = folder / f"{first_name}.zip"
+    zip_path = folder / f"{first_name}.{archive_format}"
     auto_vol = None
     if enable_volume:
         if volume_size is None:
@@ -495,18 +611,17 @@ def _compress_first(folder, base_name, files, password, bandizip_path, volume_si
             print(f"  组 {base_name} 总大小: {total_bytes / (1024**3):.2f} GB，自动分卷大小 = {auto_vol}")
         else:
             auto_vol = None
-    cmd = [bandizip_path, 'a']
+    cmd = [bandizip_path, 'a', '-fmt:' + archive_format]
     if password:
         cmd.extend(['-p:' + password])
     if enable_volume and volume_size:
         cmd.extend(['-v:' + volume_size])
     elif enable_volume and auto_vol:
         cmd.extend(['-v:' + auto_vol])
-    if auto_close:
-        cmd.append('-y')
+    cmd.append('-y')
     cmd.append(str(zip_path))
     cmd.extend([str(f) for f in files])
-    print(f"第一次压缩: {' '.join(cmd)}")
+    print(f"第一次压缩: {_command_text(cmd)}")
     _run_proc(cmd, force_cancel_check)
     print(f"成功创建分卷: {zip_path} (及其分卷)")
     if first_suffix_replace and not enable_volume:
@@ -517,36 +632,92 @@ def _compress_first(folder, base_name, files, password, bandizip_path, volume_si
             zip_path.rename(new_zip_path)
             zip_path = new_zip_path
             print(f"一次压缩后缀替换: {zip_path.name}")
+    if archive_format == '7z' and enable_volume and not zip_path.exists():
+        zip_path = folder / f"{first_name}.7z.001"
     return zip_path
 
 
-def _compress_second(folder, base_name, first_suffix, password, bandizip_path,
-                     auto_close, archive_suffix, force_cancel_check):
-    first_name = f"{base_name}{first_suffix}"
-    volume_files = list(folder.glob(f"{first_name}.*"))
-    volume_files = [f for f in volume_files if f.name != f"最终压缩{base_name}.zip"]
-    if not volume_files:
-        print(f"警告: 未找到分卷文件，跳过二次打包")
-        return
-    temp_zip_name = f"最终压缩{base_name}.zip"
-    temp_zip_path = folder / temp_zip_name
-    final_zip_name = f"{base_name}{archive_suffix}"
-    final_zip_path = folder / final_zip_name
-    cmd2 = [bandizip_path, 'a']
+def _first_artifacts(folder, base_name, first_suffix, first_suffix_replace=None, archive_format='zip'):
+    prefix = base_name + first_suffix
+    names = {prefix + '.' + archive_format}
+    if first_suffix_replace:
+        names.add(prefix + first_suffix_replace)
+    artifacts = {folder / name for name in names if (folder / name).is_file()}
+    # Successful Bandizip volumes are contiguous. Pending leftovers (including
+    # gaps) are indexed separately once per directory before processing starts.
+    sequences = {'zip': [('.z', 2), ('.zip.', 3)], '7z': [('.7z.', 3)]}
+    for separator, width in sequences.get(archive_format, []):
+        index = 1
+        while True:
+            path = folder / f'{prefix}{separator}{index:0{width}d}'
+            if not path.is_file():
+                break
+            artifacts.add(path)
+            index += 1
+    return sorted(artifacts)
+
+
+def _index_artifacts(folders, first_suffix, first_suffix_replace, archive_format):
+    extensions = [re.escape('.' + archive_format)]
+    if first_suffix_replace:
+        extensions.append(re.escape(first_suffix_replace))
+    if archive_format == 'zip':
+        extensions += [r'\.z\d+', r'\.zip\.\d+']
+    elif archive_format == '7z':
+        extensions += [r'\.7z\.\d+']
+    pattern = re.compile(r'([1-9]\d*(?:-[1-9]\d*)?)' + re.escape(first_suffix)
+                         + '(?:' + '|'.join(extensions) + ')', re.I)
+    result = {}
+    for folder in folders:
+        if not folder.is_dir():
+            continue
+        for path in folder.iterdir():
+            match = pattern.fullmatch(path.name)
+            if match and path.is_file():
+                result.setdefault((folder, match[1]), []).append(path)
+    return result
+
+
+def _verify_archive(path, password, bandizip_path, force_cancel_check):
+    if not path.is_file():
+        raise OSError(f"压缩产物缺失: {path}")
+    cmd = [bandizip_path, 't']
     if password:
-        cmd2.extend(['-p:' + password])
-    if auto_close:
-        cmd2.append('-y')
-    cmd2.append(str(temp_zip_path))
-    cmd2.extend([str(f) for f in volume_files])
-    print(f"二次打包: {' '.join(cmd2)}")
-    _run_proc(cmd2, force_cancel_check)
-    print(f"成功创建二次打包: {temp_zip_path}")
-    for f in volume_files:
-        f.unlink()
-        print(f"已删除分卷文件: {f}")
-    temp_zip_path.rename(final_zip_path)
-    print(f"重命名: {temp_zip_name} -> {final_zip_name}")
+        cmd.append('-p:' + password)
+    cmd.append('-y')
+    cmd.append(str(path))
+    print(f"校验: {path.name}")
+    _run_proc(cmd, force_cancel_check)
+    print(f"校验通过: {path.name}")
+
+
+def _compress_second(folder, base_name, first_suffix, password, bandizip_path,
+                     archive_suffix, force_cancel_check,
+                     first_suffix_replace=None, verify=False, archive_format='zip'):
+    volume_files = _first_artifacts(folder, base_name, first_suffix, first_suffix_replace, archive_format)
+    if not volume_files:
+        raise OSError(f"未找到组 {base_name} 的一次压缩产物，无法二次打包")
+    temp_zip_path = folder / f"最终压缩{base_name}.{archive_format}"
+    final_zip_path = folder / f"{base_name}{archive_suffix}"
+    if final_zip_path in volume_files:
+        raise ValueError('一次与二次压缩产物名称冲突')
+    if temp_zip_path.exists():
+        temp_zip_path.unlink()
+    cmd = [bandizip_path, 'a', '-fmt:' + archive_format]
+    if password:
+        cmd.append('-p:' + password)
+    cmd.append('-y')
+    cmd.append(str(temp_zip_path))
+    cmd.extend(str(f) for f in volume_files)
+    print(f"二次打包: {_command_text(cmd)}")
+    _run_proc(cmd, force_cancel_check)
+    if not temp_zip_path.is_file():
+        raise OSError(f"二次打包产物缺失: {temp_zip_path}")
+    if verify:
+        _verify_archive(temp_zip_path, password, bandizip_path, force_cancel_check)
+    temp_zip_path.replace(final_zip_path)
+    # Inputs are removed by the caller only after final_done is persisted.
+    return volume_files
 
 
 def group_compress(dest_root, group_size, password, volume_size=None,
@@ -555,18 +726,21 @@ def group_compress(dest_root, group_size, password, volume_size=None,
                    sort_by='name', archive_suffix='.zipp', first_suffix='-First',
                    enable_volume=True, keep_hierarchy=False, folder_order=None,
                    verify=False, first_suffix_replace=None, only_dirs=None,
-                   checkpoint=None, force_cancel_check=None):
+                   checkpoint=None, force_cancel_check=None, archive_format='zip', stats=None):
     dest_root = Path(dest_root)
     resume_mode = checkpoint is not None
+    if not resume_mode and _checkpoint_path(dest_root).exists():
+        raise ValueError('输出目录已有断点，请恢复原任务或更换输出目录')
 
     if resume_mode:
+        if Path(checkpoint).parent.resolve() != dest_root.resolve():
+            raise ValueError('恢复输出目录必须与断点所在目录一致')
         data = _load_checkpoint(checkpoint)
         cfg = data.get('config', {})
+        archive_format = cfg.get('archive_format', 'zip')
         group_size = cfg.get('group_size', group_size)
         volume_size = cfg.get('volume', volume_size)
-        bandizip_path = cfg.get('bandizip', bandizip_path)
         double_compress = cfg.get('double_compress', double_compress)
-        auto_close = cfg.get('auto_close', auto_close)
         sort_by = cfg.get('sort_by', sort_by)
         archive_suffix = cfg.get('archive_suffix', archive_suffix)
         first_suffix = cfg.get('first_suffix', first_suffix)
@@ -574,198 +748,169 @@ def group_compress(dest_root, group_size, password, volume_size=None,
         first_suffix_replace = cfg.get('first_suffix_replace', first_suffix_replace)
         verify = cfg.get('verify', verify)
         keep_hierarchy = cfg.get('keep_hierarchy', keep_hierarchy)
+        keep_files = cfg.get('keep_files', keep_files)
         groups = data.get('groups', [])
     else:
+        if not enable_volume:
+            volume_size = None
+        else:
+            first_suffix_replace = None
+        if not double_compress:
+            archive_suffix = '.' + archive_format
+        validate_compression(dict(archive_format=archive_format, password=password, enable_volume=enable_volume,
+                                  group_size=group_size, double_compress=double_compress, volume=volume_size))
         folders = _collect_dirs(dest_root, keep_hierarchy, only_dirs)
         all_groups = []
         for folder in folders:
             if folder_order and folder in folder_order:
                 files = folder_order[folder]
-                files = [f for f in files if f.exists() and f.suffix.lower() != '.zip'
-                         and f.name != 'List.txt' and f.name != RESUME_FILE_NAME]
+                files = [f for f in files if f.exists() and f.name.casefold() != RESUME_FILE_NAME]
             else:
-                files = [f for f in folder.iterdir() if f.is_file() and f.name != RESUME_FILE_NAME]
-                files = [f for f in files if f.suffix.lower() != '.zip'
-                         and f.name != 'List.txt' and f.name != RESUME_FILE_NAME]
+                files = [f for f in folder.iterdir() if f.is_file() and f.name.casefold() != RESUME_FILE_NAME]
+                files = [f for f in files if f.name != 'List.txt' and f.name.casefold() != RESUME_FILE_NAME]
                 _sort_files(files, sort_by)
             for i in range(0, len(files), group_size):
                 all_groups.append((folder, files[i:i+group_size], i))
         groups = _build_group_plan(dest_root, folders, all_groups)
         cfg = _resume_config_snapshot(
             group_size, password, volume_size, bandizip_path,
-            double_compress, auto_close, sort_by, archive_suffix,
+            double_compress, sort_by, archive_suffix,
             first_suffix, enable_volume, first_suffix_replace,
-            verify, keep_hierarchy)
-        _write_checkpoint(dest_root, {
-            "app_version": __version__,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "config": cfg,
-            "groups": groups,
-        })
+            verify, keep_hierarchy, archive_format)
+        cfg['keep_files'] = keep_files
 
-    total = len(groups)
-    completed = True
-    status = "completed"
-    for idx, g in enumerate(groups, start=1):
-        if _check_cancel(cancel_check):
-            completed = False
-            status = _cancel_status(force_cancel_check)
-            break
-        if g.get('state') == 'final_done':
-            continue
-        folder = Path(dest_root) / g['folder']
-        base_name = g['base_name']
-        if on_progress:
-            on_progress(idx, total, f"压缩 ({idx}/{total}): {base_name}")
-        if g.get('state') == 'first_done':
-            temp_zip = folder / f"最终压缩{base_name}.zip"
-            if temp_zip.exists():
-                temp_zip.unlink()
-            for orphan in _find_group_files(dest_root, g):
-                try:
-                    orphan.unlink()
-                    print(f"清理孤儿源文件: {orphan}")
-                except OSError as e:
-                    print(f"警告: 无法清理孤儿源文件 {orphan}: {e}")
-            try:
-                _compress_second(folder, base_name, first_suffix, password, bandizip_path,
-                                 auto_close, archive_suffix, force_cancel_check)
-            except ForceCancelled:
-                print("已强制取消（二次打包被终止），源文件已删除，断点为 first_done。")
-                completed = False
-                status = "force_cancelled"
-                break
-            except (subprocess.CalledProcessError, FileNotFoundError) as e:
-                print(f"恢复二次打包未完成: {e}")
-                completed = False
-                status = "error"
-                break
-            g['state'] = 'final_done'
-            _write_checkpoint(dest_root, {
-                "app_version": __version__,
-                "config": cfg,
-                "groups": groups,
-            })
-            continue
-        files = _find_group_files(dest_root, g)
-        sizes = g.get('sizes') or {}
-        missing = [n for n in g.get('files', []) if not (folder / n).is_file()]
-        modified = [n for n in g.get('files', []) if (folder / n).is_file()
-                    and n in sizes and (folder / n).stat().st_size != sizes[n]]
-        if missing or modified:
-            if missing:
-                print(f"警告: 组 {base_name} 源文件缺失，跳过该组: {', '.join(missing)}")
-            if modified:
-                print(f"警告: 组 {base_name} 源文件已被修改（大小不一致），跳过该组: {', '.join(modified)}")
-            g['state'] = 'final_done'
-            continue
-        for stale in folder.glob(f"{base_name}{first_suffix}.*"):
-            if stale.name != f"最终压缩{base_name}.zip":
-                try:
-                    stale.unlink()
-                    print(f"已删除残留归档: {stale.name}")
-                except OSError as e:
-                    print(f"警告: 无法删除残留 {stale}: {e}")
+    if enable_volume:
+        first_suffix_replace = None
+    else:
+        volume_size = None
+    validate_compression(dict(cfg, first_compress=True, archive_format=archive_format, password=password, group_size=group_size,
+                              enable_volume=enable_volume, double_compress=double_compress))
+    data = {"app_version": __version__, "config": cfg, "groups": groups}
+    failed_groups, skipped_groups = set(), set()
+    success_count = sum(g['state'] == 'final_done' for g in groups)
+    def finish(result):
+        if stats is not None:
+            successful = success_count
+            failed = len(failed_groups)
+            skipped = len(skipped_groups)
+            stats.update(groups=successful, groups_total=len(groups), groups_success=successful,
+                         groups_failed=failed, groups_skipped=skipped,
+                         groups_pending=max(0, len(groups) - successful - failed - skipped))
+        return result
+    finish('running')
+    def persist(group, state):
+        nonlocal success_count
+        previous = group['state']
+        group['state'] = state
         try:
-            _compress_first(folder, base_name, files, password, bandizip_path, volume_size,
-                            auto_close, enable_volume, first_suffix, first_suffix_replace,
-                            force_cancel_check)
-        except ForceCancelled:
-            print("已强制取消（一次压缩被终止），源文件未删除，可恢复。")
-            completed = False
-            status = "force_cancelled"
-            break
-        except subprocess.CalledProcessError as e:
-            print(f"第一次压缩失败: {e.stderr}")
-            completed = False
-            status = "error"
-            break
-        except FileNotFoundError:
-            print(f"错误: 找不到可执行文件 '{bandizip_path}'，请确保已安装并加入PATH。")
-            completed = False
-            status = "error"
-            break
-        g['state'] = 'first_done' if double_compress else 'final_done'
-        _write_checkpoint(dest_root, {
-            "app_version": __version__,
-            "config": cfg,
-            "groups": groups,
-        })
-        if not keep_files:
-            for f in files:
-                try:
-                    f.unlink()
-                    print(f"已删除原始文件: {f}")
-                except OSError as e:
-                    print(f"警告: 无法删除 {f}: {e}")
+            _write_checkpoint(dest_root, data)
+        except OSError:
+            group['state'] = previous
+            raise
+        if state == 'final_done' and previous != 'final_done':
+            success_count += 1
+    _validate_checkpoint(data, dest_root)
+    # Never allow archive cleanup or creation to consume a source of any group.
+    source_paths = {str((dest_root / g['folder'] / name).resolve()).casefold()
+                    for g in groups for name in g['files']}
+    leftovers = _index_artifacts({dest_root / g['folder'] for g in groups}, first_suffix, first_suffix_replace, archive_format)
+    for g in groups:
+        folder = dest_root / g['folder']
+        prefix = g['base_name'] + first_suffix
+        output_names = [prefix + '.' + archive_format, f"最终压缩{g['base_name']}.{archive_format}"]
+        if first_suffix_replace:
+            output_names.append(prefix + first_suffix_replace)
         if double_compress:
-            if _check_cancel(cancel_check):
-                completed = False
-                status = _cancel_status(force_cancel_check)
-                break
-            try:
-                _compress_second(folder, base_name, first_suffix, password, bandizip_path,
-                                 auto_close, archive_suffix, force_cancel_check)
-            except ForceCancelled:
-                print("已强制取消（二次打包被终止），源文件已删除，断点为 first_done。")
-                completed = False
-                status = "force_cancelled"
-                break
-            except (subprocess.CalledProcessError, OSError) as e:
-                print(f"二次打包未完成: {e}，保留分卷文件")
-                completed = False
-                status = "error"
-                break
-            except FileNotFoundError:
-                print(f"错误: 找不到可执行文件 '{bandizip_path}'，请确保已安装并加入PATH。")
-                completed = False
-                status = "error"
-                break
-            g['state'] = 'final_done'
-            _write_checkpoint(dest_root, {
-                "app_version": __version__,
-                "config": cfg,
-                "groups": groups,
-            })
-        else:
-            print("跳过二次打包（已关闭）")
-
-    if verify and completed:
-        print("\n开始校验压缩包完整性...")
-        verify_folders = set()
-        for g in groups:
-            verify_folders.add(Path(dest_root) / g['folder'])
-        for folder in sorted(verify_folders, key=lambda d: d.relative_to(dest_root)):
-            archives = [f for f in folder.iterdir() if f.is_file()
-                        and f.suffix.lower() in ('.zip', '.7z', '.rar', '.tar', '.gz',
-                                                 '.bz2', '.xz', '.lzh', '.alz', '.egg', '.zipp')]
-            for arch in archives:
+            output_names.append(g['base_name'] + archive_suffix)
+        outputs = [folder / name for name in output_names]
+        if folder.is_dir():
+            outputs += leftovers.get((folder, g['base_name']), [])
+        for output in outputs:
+            if not output.resolve().is_relative_to(dest_root.resolve()) or str(output.resolve()).casefold() in source_paths:
+                raise ValueError(f"压缩产物与源文件冲突或路径越界: {output}")
+    if not resume_mode:
+        data['created_at'] = datetime.now().isoformat(timespec="seconds")
+        _write_checkpoint(dest_root, data)
+    total = len(groups)
+    status = "completed"
+    for idx, g in enumerate(groups, 1):
+        if _check_cancel(cancel_check):
+            return finish(_cancel_status(force_cancel_check))
+        if g['state'] == 'final_done':
+            continue
+        folder, base_name = dest_root / g['folder'], g['base_name']
+        if on_progress:
+            on_progress(success_count, total, f"压缩 ({idx}/{total}): {base_name}")
+        try:
+            first_verified = False
+            if g['state'] == 'pending':
+                files = _find_group_files(dest_root, g)
+                if len(files) != len(g['files']) or any(not _source_matches(f, g) for f in files):
+                    print(f"警告: 组 {base_name} 源文件缺失或发生变化，保留待处理状态并跳过")
+                    status = "partial"
+                    skipped_groups.add(idx)
+                    finish(status)
+                    continue
+                for stale in leftovers.get((folder, base_name), []):
+                    stale.unlink()
+                first = _compress_first(folder, base_name, files, password, bandizip_path, volume_size,
+                                        enable_volume, first_suffix, first_suffix_replace,
+                                        force_cancel_check, archive_format)
+                if not first.is_file():
+                    raise OSError(f"一次压缩产物缺失: {first}")
+                if verify:
+                    _verify_archive(first, password, bandizip_path, force_cancel_check)
+                    first_verified = True
+                if any(not _source_matches(source, g) for source in files):
+                    raise ValueError('源文件在压缩期间发生变化，已保留输入和断点，请核对后重试')
+                persist(g, 'first_done' if double_compress else 'final_done')
+                if not keep_files:
+                    for source in files:
+                        if not _source_matches(source, g):
+                            raise ValueError(f'源文件在清理前发生变化，已保留：{source}')
+                        source.unlink()
+                if not double_compress:
+                    finish(status)
+                    if on_progress:
+                        on_progress(stats['groups'] if stats is not None else success_count, total, f"压缩完成: {base_name}")
+                    continue
                 if _check_cancel(cancel_check):
-                    return _cancel_status(force_cancel_check)
-                test_cmd = [bandizip_path, 't']
-                if password:
-                    test_cmd.append('-p:' + password)
-                if auto_close:
-                    test_cmd.append('-y')
-                test_cmd.append(str(arch))
-                print(f"校验: {arch.name}")
-                try:
-                    _run_proc(test_cmd, force_cancel_check)
-                    print(f"  ✔ {arch.name} 校验通过")
-                except subprocess.CalledProcessError:
-                    print(f"  ✘ {arch.name} 校验失败，文件可能已损坏")
-                except FileNotFoundError:
-                    print(f"  ✘ 找不到 Bandizip，无法校验")
-                    return "error"
-        print("校验完成。")
-
-    if completed and not _check_cancel(cancel_check):
+                    return finish(_cancel_status(force_cancel_check))
+            # Also verify old first_done checkpoints before creating a second archive.
+            if verify and not first_verified:
+                first = folder / (base_name + first_suffix +
+                                  (first_suffix_replace if first_suffix_replace and not enable_volume else '.' + archive_format))
+                if archive_format == '7z' and enable_volume and not first.exists():
+                    first = first.with_name(first.name + '.001')
+                _verify_archive(first, password, bandizip_path, force_cancel_check)
+            artifacts = _compress_second(folder, base_name, first_suffix, password, bandizip_path,
+                                         archive_suffix, force_cancel_check,
+                                         first_suffix_replace, verify, archive_format)
+            persist(g, 'final_done')
+            for artifact in artifacts:
+                artifact.unlink()
+            # A restored first_done checkpoint does not prove that a file now at
+            # the old path is still the old input. Never delete recreated files.
+            if not keep_files and _find_group_files(dest_root, g):
+                print(f'组 {base_name} 的遗留源文件已保留，请核对后自行处理')
+            finish(status)
+            if on_progress:
+                on_progress(success_count, total, f"压缩完成: {base_name}")
+        except ForceCancelled:
+            print(f"组 {base_name} 已强制中断，保留断点及可用输入")
+            return finish("force_cancelled")
+        except (OSError, subprocess.CalledProcessError, ValueError) as error:
+            print(f"组 {base_name} 处理失败，保留断点及可用输入: {redact(error, password)}")
+            if g['state'] != 'final_done':
+                failed_groups.add(idx)
+            return finish("error")
+    if status == "completed":
         _delete_checkpoint(dest_root)
-    return status
+    return finish(status)
 
 
 def _resume_task(checkpoint_path, password, bandizip_path, on_progress, cancel_check,
-                 force_cancel_check):
+                 force_cancel_check, stats=None):
     data = _load_checkpoint(checkpoint_path)
     cfg = data.get('config', {})
     groups = data.get('groups', [])
@@ -780,8 +925,18 @@ def _resume_task(checkpoint_path, password, bandizip_path, on_progress, cancel_c
     print("=" * 40)
     if pending <= 0:
         print("所有组均已完成，无需恢复。")
+        _delete_checkpoint(Path(checkpoint_path).parent)
+        if stats is not None:
+            stats.update(groups=len(groups), groups_total=len(groups), groups_success=len(groups),
+                         groups_failed=0, groups_skipped=0, groups_pending=0)
         return "completed"
     dest_root = Path(checkpoint_path).parent
+    from sortzip_core.resume_passwords import verify_legacy
+    try:
+        if not verify_legacy(dest_root,cfg,groups,bandizip_path,password,cancel_check,force_cancel_check):
+            return _cancel_status(force_cancel_check)
+    except ForceCancelled:
+        return 'force_cancelled'
     if on_progress:
         on_progress(0, 100, 0, 1, "准备恢复...")
     return group_compress(
@@ -792,7 +947,6 @@ def _resume_task(checkpoint_path, password, bandizip_path, on_progress, cancel_c
         bandizip_path=bandizip_path,
         keep_files=False,
         double_compress=cfg.get('double_compress', True),
-        auto_close=cfg.get('auto_close', True),
         on_progress=lambda c, t, m: on_progress(0, 100, c, t, m) if on_progress else None,
         cancel_check=cancel_check,
         sort_by=cfg.get('sort_by', 'name'),
@@ -804,96 +958,90 @@ def _resume_task(checkpoint_path, password, bandizip_path, on_progress, cancel_c
         first_suffix_replace=cfg.get('first_suffix_replace'),
         checkpoint=checkpoint_path,
         force_cancel_check=force_cancel_check,
+        archive_format=cfg.get('archive_format', 'zip'), stats=stats,
     )
 
 
-def main_from_config(config, on_progress=None, cancel_check=None, force_cancel_check=None):
-    resume_from = config.get('resume_from')
-    if resume_from:
-        return _resume_task(resume_from, config.get('password', ''),
-                            config.get('bandizip', 'bandizip'),
-                            on_progress, cancel_check, force_cancel_check)
-    print("=== 使用配置参数运行 ===")
-    print(f"输入文件夹: {config['src']}")
-    print(f"输出文件夹: {config['dest']}")
-    print(f"每包文件数: {config['group_size']}")
-    print(f"密码: {'已设置' if config['password'] else '无'}")
-    print(f"分卷: {'自动检测' if config['volume'] is None else config['volume']}")
-    print(f"压缩工具: {config['bandizip']}")
-    print(f"自定义分类: {config['custom_names']}")
-    sort_labels = {'name': '文件名(升序)', 'name_desc': '文件名(降序)', 'mtime': '修改时间(旧→新)',
-                   'mtime_desc': '修改时间(新→旧)', 'size_asc': '文件大小(小→大)',
-                   'size_desc': '文件大小(大→小)', 'ext': '扩展名'}
-    print(f"排序依据: {sort_labels.get(config.get('sort_by', 'name'), config.get('sort_by', 'name'))}")
-    print(f"保留原始文件: {'开启' if config['keep_files'] else '关闭'}")
-    print(f"输出目录: {'开启' if config.get('output_list', False) else '关闭'}")
-    print(f"二次打包: {'开启' if config.get('double_compress', True) else '关闭'}")
-    print(f"自动关闭窗口: {'开启' if config.get('auto_close', True) else '关闭'}")
-    print(f"一次压缩: {'开启' if config.get('first_compress', True) else '关闭'}")
-    print(f"保持文件夹层级: {'开启' if config.get('keep_hierarchy', False) else '关闭'}")
-    print("=" * 40)
-    src = config['src']
-    dest = config['dest']
-    custom_names = config.get('custom_names', {})
-    naming_rules = config.get('naming_rules', None)
-    keep_hierarchy = config.get('keep_hierarchy', False)
-    if _check_cancel(cancel_check):
-        return _cancel_status(force_cancel_check)
-    print("开始文件分类...")
-    created_dirs = classify_files(src, dest, custom_names,
-                   on_progress=lambda c, t, m: on_progress(0, 30, c, t, m) if on_progress else None,
-                   cancel_check=cancel_check,
-                   keep_files=config.get('keep_files', False),
-                   recursive=config.get('recursive', False),
-                   keep_hierarchy=keep_hierarchy)
-    print("分类完成。")
-    if _check_cancel(cancel_check):
-        return _cancel_status(force_cancel_check)
-    if config.get('output_list', False):
-        print("输出命名对照表...")
-        write_rename_list(dest, naming_rules, config.get('sort_by', 'name'),
-                          config.get('group_size', 1), config.get('archive_suffix', '.zip'),
-                          compression_enabled=config.get('first_compress', True),
-                          keep_hierarchy=keep_hierarchy, only_dirs=created_dirs)
-    print("开始重命名...")
-    folder_order = rename_files_in_folders(dest, config['sort_by'],
-                            on_progress=lambda c, t, m: on_progress(30, 40, c, t, m) if on_progress else None,
-                            cancel_check=cancel_check,
-                            naming_rules=naming_rules,
-                            keep_hierarchy=keep_hierarchy,
-                            preview_order=config.get('preview_order'),
-                            only_dirs=created_dirs)
-    print("重命名完成。")
-    if _check_cancel(cancel_check):
-        return _cancel_status(force_cancel_check)
+def main_from_config(config, on_progress=None, cancel_check=None, force_cancel_check=None, stats=None):
+    if stats is None:
+        stats = {}
+    stats.pop('error_detail',None)
+    stats.update(files_moved=0, files_renamed=0, groups=0, groups_total=0,
+                 groups_success=0, groups_failed=0, groups_skipped=0, groups_pending=0)
+    if config.get('resume_from'):
+        header = json.loads(Path(config['resume_from']).read_text(encoding='utf-8'))
+        if isinstance(header,dict) and header.get('schema')==4:
+            from sortzip_core.task_recovery import resume
+            return resume(config,stats,on_progress,cancel_check,force_cancel_check)
+        if isinstance(header, dict) and header.get('kind')=='multilayer':
+            from sortzip_core.nested_pipeline import resume
+            return resume(config, stats, on_progress, cancel_check, force_cancel_check)
+        if config.get('_archive_tool_identity') is not None:
+            from sortzip_core.nested_pipeline import preflight_tool
+            preflight_tool(config)
+        return _resume_task(config['resume_from'], config.get('password', ''),
+                            config.get('bandizip', 'bandizip'), on_progress,
+                            cancel_check, force_cancel_check, stats)
+    config = prepare_config(config)
+    if '_nested_plan' in config:
+        from sortzip_core.nested_pipeline import preflight_tool
+        preflight_tool(config)
+    plan = config['execution_plan']
+    if not plan:
+        print('没有匹配的文件')
+        return 'completed'
     if config.get('first_compress', True):
-        print("开始分组压缩...")
-        first_suffix = '-First' if config.get('double_compress', True) else ''
-        return group_compress(
-            dest_root=dest,
-            group_size=config['group_size'],
-            password=config['password'],
-            volume_size=config['volume'],
-            bandizip_path=config['bandizip'],
-            keep_files=False,
-            double_compress=config.get('double_compress', True),
-            auto_close=config.get('auto_close', True),
-            on_progress=lambda c, t, m: on_progress(40, 100, c, t, m) if on_progress else None,
-            cancel_check=cancel_check,
-            sort_by=config.get('sort_by', 'name'),
-            archive_suffix=config.get('archive_suffix', '.zipp'),
-            first_suffix=first_suffix,
-            enable_volume=config.get('enable_volume', True),
-            keep_hierarchy=keep_hierarchy,
-            folder_order=folder_order,
-            verify=config.get('verify_archive', False),
-            first_suffix_replace=config.get('first_suffix_replace'),
-            only_dirs=created_dirs,
-            force_cancel_check=force_cancel_check,
-        )
-    else:
-        print("压缩已禁用，仅完成分类与重命名。")
-        return "completed"
+        count = (len(config['_nested_plan'].tasks) if '_nested_plan' in config
+                 else len({(e['folder'], e['group']) for e in plan}))
+        stats.update(groups_total=count, groups_pending=count)
+    print(f"执行计划: {len(plan)} 个文件；真实压缩格式: {config.get('archive_format', 'zip')}")
+    # Validate the confirmed snapshot before the first copy/move.
+    for entry in plan:
+        source = entry['source']
+        info = source.stat()
+        if info.st_size != entry['size'] or info.st_mtime_ns != entry['mtime_ns']:
+            raise ValueError(f"源文件在预览后发生变化，请重新预览：{entry['source_rel']}")
+        target = Path(config['dest']) / entry['folder'] / entry['classified_name']
+        if target.exists() or target.is_symlink():
+            raise FileExistsError(f"分类目标已存在：{entry['folder']}/{entry['classified_name']}")
+    if _check_cancel(cancel_check):
+        return _cancel_status(force_cancel_check)
+    if '_nested_plan' in config or (not config.get('first_compress',True) and 'archive_tool' in config):
+        from sortzip_core.task_recovery import start
+        return start(config,stats,on_progress,cancel_check,force_cancel_check)
+    def report(start, end, cur, total, message):
+        if on_progress:
+            on_progress(start, end, cur, total, message)
+    def classified(cur, total, message):
+        stats['files_moved'] = cur
+        report(0, 30, cur, total, message)
+    created_dirs = classify_files(config['src'], config['dest'], keep_files=config.get('keep_files', False),
+                                 on_progress=classified, cancel_check=cancel_check, execution_plan=plan)
+    if _check_cancel(cancel_check):
+        return _cancel_status(force_cancel_check)
+    folder_order = rename_files_in_folders(config['dest'], config.get('sort_by', 'name'),
+        naming_rules=config.get('naming_rules'), keep_hierarchy=config.get('keep_hierarchy', False),
+        only_dirs=created_dirs, execution_plan=plan, on_progress=lambda c,t,m: report(30,40,c,t,m), cancel_check=cancel_check, stats=stats)
+    if _check_cancel(cancel_check):
+        return _cancel_status(force_cancel_check)
+    if config.get('output_list') and '_nested_plan' not in config:
+        write_rename_list(config['dest'], config.get('naming_rules'),
+                          compression_enabled=config.get('first_compress', True), execution_plan=plan)
+    if not config.get('first_compress', True):
+        return 'completed'
+    if '_nested_plan' in config:
+        from sortzip_core.nested_pipeline import execute
+        return execute(config, stats, on_progress, cancel_check, force_cancel_check)
+    return group_compress(config['dest'], config['group_size'], config.get('password', ''),
+        volume_size=config.get('volume'), bandizip_path=config.get('bandizip', 'bandizip'),
+        double_compress=config.get('double_compress', True),
+        on_progress=lambda c, t, m: report(40, 100, c, t, m), cancel_check=cancel_check,
+        first_suffix='-First' if config.get('double_compress', True) else '',
+        archive_suffix=final_suffix(dict(config, double_compress=True)),
+        enable_volume=config.get('enable_volume', True), keep_hierarchy=config.get('keep_hierarchy', False),
+        folder_order=folder_order, verify=config.get('verify_archive', False),
+        first_suffix_replace=config.get('first_suffix_replace'), only_dirs=created_dirs,
+        force_cancel_check=force_cancel_check, archive_format=config.get('archive_format', 'zip'), stats=stats)
 
 
 def cli():

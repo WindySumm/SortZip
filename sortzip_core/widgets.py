@@ -8,7 +8,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QObject, Signal, Slot
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 
-from sortzip_core.engine import main_from_config
+from sortzip_core.config import validate_password
+from sortzip_core.tasks import Worker, LogStream  # backward-compatible imports
 from sortzip_core.manual_content import MANUAL_TEXT
 
 
@@ -20,16 +21,6 @@ def resource_path(relative_path):
     return os.path.join(base, relative_path)
 
 
-def validate_password(password, confirm):
-    """校验压缩密码，返回错误文案或 None。规则与执行前校验保持一致：非空则至少 8 位、两次输入一致。"""
-    if password and len(password) < 8:
-        return ("密码格式错误",
-                "压缩密码至少需要 8 位字符\n"
-                "支持字母、数字和特殊符号\n"
-                "如不需要密码请留空")
-    if password != confirm:
-        return ("密码不一致", "两次输入的压缩密码不一致\n请重新输入")
-    return None
 
 
 class PasswordDialog(QDialog):
@@ -131,7 +122,7 @@ def show_styled_dialog(parent, title, message, width=300, height=160):
 def show_stats_dialog(parent, stats, dest_path=None, status="completed"):
     dlg = QDialog(parent)
     dlg.setWindowTitle("统计报告")
-    dlg.setFixedSize(280, 200)
+    dlg.setMinimumSize(340, 300)
     layout = QVBoxLayout(dlg)
     layout.setSpacing(10)
     titles = {
@@ -139,15 +130,23 @@ def show_stats_dialog(parent, stats, dest_path=None, status="completed"):
         "safe_cancelled": "已安全中断",
         "force_cancelled": "已强制中断",
         "error": "处理中断（异常）",
+        "partial": "部分分组跳过（可恢复）",
     }
     title = QLabel(titles.get(status, "处理完成"))
     title.setStyleSheet("font-size: 14px; font-weight: bold;")
     title.setAlignment(Qt.AlignmentFlag.AlignCenter)
     layout.addWidget(title)
     layout.addSpacing(6)
-    for label, key in [("移动文件", "files_moved"),
+    if stats.get('error_detail'):
+        detail = QLabel(stats['error_detail'])
+        detail.setTextFormat(Qt.TextFormat.PlainText)
+        detail.setWordWrap(True)
+        detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(detail)
+    for label, key in [("分类文件", "files_moved"),
                        ("重命名文件", "files_renamed"),
-                       ("压缩组数", "groups")]:
+                       ("成功组数", "groups"), ("失败组数", "groups_failed"),
+                       ("跳过组数", "groups_skipped"), ("待处理组数", "groups_pending")]:
         row = QHBoxLayout()
         lbl = QLabel(f"{label}:")
         val_text = str(stats.get(key, 0))
@@ -199,6 +198,7 @@ def show_conflict_dialog(parent, folder_name, template, conflicts):
 
 class ReorderableTable(QTableWidget):
     rowsReordered = Signal()
+    rowsAboutToReorder = Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -221,6 +221,8 @@ class ReorderableTable(QTableWidget):
         if drag_row == drop_row:
             event.accept()
             return
+        self.rowsAboutToReorder.emit()
+        blocked = self.blockSignals(True)
         row_data = []
         for col in range(self.columnCount()):
             item = self.takeItem(drag_row, col)
@@ -230,6 +232,7 @@ class ReorderableTable(QTableWidget):
         self.insertRow(insert_row)
         for col, item in enumerate(row_data):
             self.setItem(insert_row, col, item)
+        self.blockSignals(blocked)
         event.accept()
         self.rowsReordered.emit()
 
@@ -283,77 +286,3 @@ class DropResumeButton(QPushButton):
                     event.acceptProposedAction()
                     return
         super().dropEvent(event)
-
-
-class LogStream:
-    def __init__(self, signal):
-        self.signal = signal
-
-    def write(self, text):
-        if text:
-            self.signal.emit(text)
-
-    def flush(self):
-        pass
-
-
-class Worker(QObject):
-    log = Signal(str)
-    error = Signal(str)
-    progress = Signal(int, int, str)
-    cancel_waiting = Signal()
-    finished = Signal()
-
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self._cancelled = False
-        self._force_cancelled = False
-        self.status = "completed"
-        self.stats = {"files_moved": 0, "files_renamed": 0, "groups": 0}
-
-    def cancel(self):
-        self._cancelled = True
-        self.cancel_waiting.emit()
-
-    def force_cancel(self):
-        self._force_cancelled = True
-        self._cancelled = True
-
-    def _cancel_check(self):
-        return self._cancelled
-
-    def _force_cancel_check(self):
-        return self._force_cancelled
-
-    @Slot()
-    def run(self):
-        old_stdout = sys.stdout
-        sys.stdout = LogStream(self.log)
-        try:
-            self.status = main_from_config(
-                self.config,
-                on_progress=lambda start, end, cur, total, msg: self._report_progress(start, end, cur, total, msg),
-                cancel_check=self._cancel_check,
-                force_cancel_check=self._force_cancel_check,
-            )
-        except Exception as e:
-            self.status = "error"
-            self.error.emit(str(e))
-        finally:
-            sys.stdout = old_stdout
-            self.finished.emit()
-
-    def _report_progress(self, start_pct, end_pct, cur, total, msg):
-        if total <= 0:
-            pct = start_pct
-        else:
-            pct = start_pct + (end_pct - start_pct) * cur // total
-        if msg.startswith("分类"):
-            self.stats["files_moved"] = cur
-        elif msg.startswith("重命名"):
-            self.stats["files_renamed"] = cur
-        elif msg.startswith("压缩"):
-            self.stats["groups"] = cur
-            self.stats["groups_total"] = total
-        self.progress.emit(pct, 100, msg)

@@ -37,17 +37,26 @@ _RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | \
 
 # ---- 恢复任务 ----
 RESUME_FILE_NAME = ".sortzip_resume.json"
+FILE_TASK_ARTIFACTS = frozenset((
+    RESUME_FILE_NAME,'.sortzip-files.sqlite3','.sortzip-files.sqlite3-journal',
+    '.sortzip-files.sqlite3-wal','.sortzip-files.sqlite3-shm','.sortzip-task.lock',
+))
+
+
+def is_task_artifact(name):
+    folded = name.casefold()
+    return folded in FILE_TASK_ARTIFACTS or folded.startswith(('.sortzip-', '.sortzip_checkpoint_', '.sortzip_rename_'))
 
 
 def validate_win_folder_name(name):
     if not name:
         return "文件夹名不能为空"
     for c in name:
-        if c in _INVALID_FOLDER_CHARS:
+        if c in _INVALID_FOLDER_CHARS or ord(c) < 32:
             return f"文件夹名不能包含字符：{c}"
     if name[-1] in (' ', '.'):
         return "文件夹名不能以空格或句点结尾"
-    if name.upper() in _RESERVED_NAMES:
+    if name.split('.')[0].upper() in _RESERVED_NAMES:
         return f"文件夹名不能是 Windows 保留名称：{name}"
     return None
 
@@ -62,6 +71,18 @@ RENAME_PRESETS = [
 
 # ---- 暗色主题样式表 ----
 DARK_QSS = """
+QLineEdit:disabled, QSpinBox:disabled, QComboBox:disabled {
+    color: #777777;
+    background-color: #252525;
+    border: 1px solid #333333;
+}
+QLabel:disabled, QCheckBox:disabled, QGroupBox:disabled {
+    color: #777777;
+}
+QCheckBox::indicator:disabled {
+    background-color: #252525;
+    border: 1px solid #333333;
+}
 QMainWindow, QDialog, QWidget {
     background-color: #1e1e1e;
     color: #e0e0e0;
