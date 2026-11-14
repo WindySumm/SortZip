@@ -95,12 +95,15 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         self.restore_original_names.setToolTip(tr('手动解压各组后运行脚本，可校验文件并恢复原名。随包映射包含原始文件名，请按需启用。'))
         final_layout.insertWidget(final_layout.indexOf(self.output_list)+1,self.restore_original_names)
         self.restore_original_names.toggled.connect(self.change)
+        unpack_heading = QLabel(tr('SortZip 解包并恢复'))
+        unpack_heading.setObjectName('SectionTitle')
         self.delivery_manifest = StateCheckBox(tr('生成自动解包清单'))
-        self.delivery_manifest.setToolTip(tr('包外清单会公开外层格式和标准卷名。'))
-        self.delivery_original = StateCheckBox(tr('附带自动恢复原名的映射'))
-        self.delivery_original.setToolTip(tr('将原文件名写入最内层归档。随包改名脚本和 List.txt 由各自的选项控制，也可能公开原名。'))
-        for offset,control in enumerate((self.delivery_manifest,self.delivery_original),1):
+        self.delivery_manifest.setToolTip(tr('生成供 SortZip 自动解压使用的 .sortzip.json 文件。请与整套最外层分卷一起交付。清单会公开外层格式和标准卷名。'))
+        self.delivery_original = StateCheckBox(tr('自动恢复原文件名'))
+        self.delivery_original.setToolTip(tr('将原名写入最内层归档，供 SortZip 自动解压后恢复文件名。手动改名脚本和 List.txt 也可能包含原名，由各自的选项控制。'))
+        for offset,control in enumerate((unpack_heading,self.delivery_manifest,self.delivery_original),1):
             final_layout.insertWidget(final_layout.indexOf(self.restore_original_names)+offset,control)
+        for control in (self.delivery_manifest,self.delivery_original):
             control.toggled.connect(self.change)
         self._retention_signature = None
         self.archive_tool_combo.currentIndexChanged.connect(self._archive_tool_changed)
@@ -641,9 +644,10 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
             if config.get('restore_original_names'):
                 lines.append(tr('随包附带原始文件名还原脚本'))
             if config.get('delivery_manifest'):
+                lines.append(tr('SortZip 解包并恢复'))
                 lines.extend((tr('生成自动解包清单'),tr('包外清单会公开外层格式和标准卷名。')))
                 if config.get('delivery_original_names'):
-                    lines.append(tr('附带自动恢复原名的映射'))
+                    lines.append(tr('自动恢复原文件名'))
             lines.append(tr('压缩工具：')+TOOL_NAMES[config.get('archive_tool','bandizip')])
             tool = config.get('_archive_tool')
             if tool:

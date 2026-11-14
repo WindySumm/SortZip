@@ -111,6 +111,11 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(unpack.run(dict(options,unpack_manifests=paths[1:]),{}),'completed')
         result = {frozenset(path.name for path in folder.iterdir()) for folder in output.glob('*/group-1')}
         self.assertEqual(result,{frozenset(self.files),frozenset(('新的 = 1.txt','新的 = 2.zip'))})
+        output = self.root/'keep-renamed'
+        self.assertEqual(unpack.run(dict(options,dest=str(output),unpack_original=False),{}),'completed')
+        groups = list(output.glob('*/group-1'))
+        self.assertEqual(len(groups),2)
+        self.assertTrue(all({path.name for path in group.iterdir()}=={'新的 = 1.txt','新的 = 2.zip'} for group in groups))
 
     @unittest.skipUnless(os.environ.get('SORTZIP_INTEGRATION')=='1','real compression tools')
     def test_encrypted_mixed_layers_resume_and_volume_names(self):

@@ -1,24 +1,97 @@
 """Collect local extraction choices and an ordered, task-only password list."""
-from PySide6.QtWidgets import (QDialog,QDialogButtonBox,QFileDialog,QHBoxLayout,
-                               QLineEdit,QPushButton,QScrollArea,QVBoxLayout,QWidget)
+from pathlib import Path
 
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (QDialog,QDialogButtonBox,QFileDialog,QFormLayout,QHBoxLayout,
+                               QLabel,QLineEdit,QPushButton,QScrollArea,QVBoxLayout,QWidget)
+
+from sortzip_core import delivery_manifest
 from sortzip_core.i18n import tr
 from sortzip_core.ui_controls import StateCheckBox
 
 
 def choose_task(parent,start):
-    paths,_ = QFileDialog.getOpenFileNames(parent,tr('选择 SortZip 交付清单'),start,
-                                        tr('SortZip 交付清单 (*.sortzip.json)'))
-    if not paths:
-        return None
-    destination = QFileDialog.getExistingDirectory(parent,tr('选择解包输出目录'),start)
-    if not destination:
-        return None
     dialog = QDialog(parent)
     dialog.setWindowTitle(tr('解包并恢复'))
-    dialog.resize(470,360)
+    dialog.resize(500,390)
     layout = QVBoxLayout(dialog)
-    original = StateCheckBox(tr('有映射时恢复原名'))
+    hint = QLabel(tr('请将解包清单与整套压缩文件放在同一目录。可以同时选择多份清单。'))
+    hint.setWordWrap(True)
+    layout.addWidget(hint)
+
+    form = QFormLayout()
+    layout.addLayout(form)
+    manifest_field = QLineEdit(dialog)
+    manifest_field.setReadOnly(True)
+    manifest_field.setPlaceholderText(tr('选择解包清单（.sortzip.json）'))
+    destination_field = QLineEdit(dialog)
+    destination_field.setReadOnly(True)
+    destination_field.setPlaceholderText(tr('选择输出目录'))
+    error = QLabel()
+    error.setWordWrap(True)
+    error.setTextFormat(Qt.TextFormat.PlainText)
+    error.hide()
+    paths = []
+
+    def show_error(message):
+        error.setText(message)
+        error.setVisible(bool(message))
+
+    def refresh():
+        begin.setEnabled(bool(paths and destination_field.text()))
+
+    def check_manifest(value):
+        path = Path(value)
+        if not path.name.lower().endswith(delivery_manifest.EXTENSION):
+            raise ValueError(tr('请选择 SortZip 交付清单'))
+        delivery_manifest.read(path,delivery_manifest.validate_archive)
+
+    def clear_manifests():
+        paths.clear()
+        manifest_field.clear()
+        manifest_field.setToolTip('')
+        refresh()
+
+    def browse_manifests():
+        folder = str(Path(paths[0]).parent) if paths else start
+        selected,_ = QFileDialog.getOpenFileNames(dialog,tr('选择 SortZip 交付清单'),folder,
+                                                  tr('SortZip 交付清单 (*.sortzip.json)'))
+        if not selected:
+            return
+        clear_manifests()
+        show_error('')
+        for value in selected:
+            try:
+                check_manifest(value)
+            except (OSError,ValueError):
+                show_error(tr('无法读取解包清单：{0}',value))
+                return
+        paths.extend(selected)
+        manifest_field.setText(Path(paths[0]).name if len(paths)==1 else tr('已选择 {0} 份清单',len(paths)))
+        manifest_field.setToolTip('\n'.join(paths))
+        refresh()
+
+    def browse_destination():
+        path = QFileDialog.getExistingDirectory(dialog,tr('选择解包输出目录'),destination_field.text() or start)
+        if path:
+            destination_field.setText(path)
+            if paths:
+                show_error('')
+            refresh()
+
+    for label,field,action in ((tr('解包清单'),manifest_field,browse_manifests),
+                               (tr('输出目录'),destination_field,browse_destination)):
+        row = QHBoxLayout()
+        row.addWidget(field,1)
+        browse = QPushButton(tr('浏览'),dialog)
+        browse.setAccessibleName(field.placeholderText())
+        browse.clicked.connect(action)
+        row.addWidget(browse)
+        form.addRow(label,row)
+    layout.addWidget(error)
+
+    original = StateCheckBox(tr('有原名时恢复文件名'))
+    original.setToolTip(tr('自动读取最内层归档中的原名。归档没有提供原名时，保留整理后的文件名。'))
     original.setChecked(True)
     keep = StateCheckBox(tr('保留内层归档'))
     layout.addWidget(original)
@@ -71,12 +144,33 @@ def choose_task(parent,start):
     add_button.clicked.connect(add)
     layout.addWidget(add_button)
     buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel,dialog)
-    buttons.accepted.connect(dialog.accept)
+    begin = buttons.button(QDialogButtonBox.StandardButton.Ok)
+    begin.setText(tr('开始解包'))
+    begin.setEnabled(False)
+
+    def accept():
+        if not begin.isEnabled():
+            return
+        for value in paths:
+            try:
+                check_manifest(value)
+            except (OSError,ValueError):
+                show_error(tr('无法读取解包清单：{0}',value))
+                clear_manifests()
+                return
+        if not Path(destination_field.text()).is_dir():
+            show_error(tr('请选择有效的输出文件夹'))
+            destination_field.clear()
+            refresh()
+            return
+        dialog.accept()
+
+    buttons.accepted.connect(accept)
     buttons.rejected.connect(dialog.reject)
     layout.addWidget(buttons)
     result = None
     if dialog.exec()==QDialog.DialogCode.Accepted:
-        result = dict(dest=destination,unpack_manifests=paths,unpack_keep=keep.isChecked(),
+        result = dict(dest=destination_field.text(),unpack_manifests=paths,unpack_keep=keep.isChecked(),
                       unpack_original=original.isChecked(),unpack_passwords=[edit.text() for _,edit in editors if edit.text()])
     for _,edit in editors:
         edit.clear()

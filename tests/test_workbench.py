@@ -219,6 +219,48 @@ class WorkbenchTests(unittest.TestCase):
             self.assertIn('7-Zip',dialog.call_args.args[2])
         self.assertEqual(self.results[0][1]['status'],'completed')
 
+    def test_unpack_dialog_opens_before_browsing_and_validates_required_fields(self):
+        from PySide6.QtWidgets import QDialog,QDialogButtonBox,QFileDialog,QLabel,QPushButton
+        from sortzip_core.delivery_manifest import describe,write_new
+        from sortzip_core.unpack_dialog import choose_task
+
+        missing = self.root/'damaged.sortzip.json'
+        missing.write_text('{}',encoding='utf-8')
+        archive = self.root/'sample.zip'
+        archive.write_bytes(b'sample')
+        paths = [self.root/f'{label}.sortzip.json' for label in ('first','second')]
+        for path in paths:
+            write_new(path,dict(schema=1,tool='bandizip',format='zip',stem='sample',entry=archive.name,
+                                encrypted=False,suffix=None,volumes=[describe(archive)]))
+        selections = [([str(missing)],''),(list(map(str,paths)),''),([], '')]
+        with patch.object(QFileDialog,'getOpenFileNames',side_effect=selections) as files,patch.object(
+                QFileDialog,'getExistingDirectory',return_value=str(self.root)) as directory:
+            def exercise(dialog):
+                files.assert_not_called()
+                directory.assert_not_called()
+                begin = dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Ok)
+                browse = [btn for btn in dialog.findChildren(QPushButton) if btn.text()=='浏览']
+                self.assertEqual(len(browse),2)
+                self.assertFalse(begin.isEnabled())
+                browse[1].click()
+                self.assertFalse(begin.isEnabled())
+                browse[0].click()
+                self.assertFalse(begin.isEnabled())
+                self.assertTrue(any(str(missing) in label.text() for label in dialog.findChildren(QLabel)))
+                browse[0].click()
+                self.assertTrue(begin.isEnabled())
+                browse[0].click()
+                self.assertTrue(begin.isEnabled())
+                begin.click()
+                return dialog.result()
+            with patch.object(QDialog,'exec',exercise):
+                config = choose_task(self.window,str(self.root))
+        self.assertTrue(config['unpack_original'])
+        self.assertFalse(config['unpack_keep'])
+        self.assertEqual(config['unpack_passwords'],[])
+        self.assertEqual(config['unpack_manifests'],list(map(str,paths)))
+        self.assertEqual(config['dest'],str(self.root))
+
     def dispose(self):
         from shiboken6 import isValid
         if isValid(self.window):

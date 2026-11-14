@@ -197,7 +197,7 @@ Get-Content .build-validation\source-smoke.json
 
 ```powershell
 $report = Join-Path (Get-Location) '.build-validation\frozen-smoke.json'
-$process = Start-Process -FilePath '.\release\SortZip-v1.2.0.exe' `
+$process = Start-Process -FilePath '.\release\SortZip-v1.2.5.exe' `
     -ArgumentList @('--smoke-test', ('"' + $report + '"')) `
     -WindowStyle Hidden -Wait -PassThru
 $process.ExitCode
@@ -206,7 +206,7 @@ Get-Content $report
 
 干净环境验收时复制同一份候选 EXE 和校验文件，用 `Get-FileHash -Algorithm SHA256` 确认一致。在该环境中设置 `SORTZIP_SMOKE_TOOL` 为 `missing`、`bandizip`、`7zip` 或 `winrar`。多工具场景把 `SORTZIP_SMOKE_DETECTED` 设为以逗号分隔的工具名，例如 `bandizip,7zip,winrar`，并通过 `SORTZIP_SMOKE_TOOL` 选择本次使用的工具。检查包含旧偏好迁移、分类取消恢复、旧多层断点恢复、后缀还原脚本、分卷逐层解包及 `List.txt` 入口核对。最终发布使用通过验收的同一份产物。
 
-将 `release/` 中验收通过的 EXE 和校验文件作为附件上传到 GitHub Releases。应用和打包共用 `assets/sortzip.ico`，README 使用 `docs/images/sortzip.svg`。
+将 `release/` 中验收通过的 EXE 作为附件上传到 GitHub Releases。构建生成的校验文件供本地验收使用。应用和打包共用 `assets/sortzip.ico`，README 使用 `docs/images/sortzip.svg`。
 
 检查退出码为 0、报告状态为 `ok`。本地环境及临时构建产物均已忽略；验证成功不表示已发布新版本。正常发布前仍需维护 README、CHANGELOG 与内置使用手册，并核对版本对应的实际修改。
 
