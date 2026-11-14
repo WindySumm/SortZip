@@ -101,3 +101,57 @@ class RestoreBundleTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(manifest),encoding='utf-8')
         self.assertEqual(self.run_script().returncode,1)
         self.assertFalse((self.root/'other.txt').exists())
+
+    @unittest.skipUnless(os.environ.get('SORTZIP_INTEGRATION')=='1' and os.name=='nt','Windows script integration')
+    def test_staging_conflict_reports_path_before_renaming_more_files(self):
+        write_bundle(self.kit,[(self.a,'原来 A.txt'),(self.b,'原来 B.txt')])
+        manifest_path = self.kit/'Restore-Names.json'
+        manifest = json.loads(manifest_path.read_bytes())
+        temporary = self.root/manifest['files'][0]['temp']
+        self.a.rename(temporary)
+        state = dict(schema=1,job=manifest['job'],manifest=hashlib.sha256(
+            manifest_path.read_bytes()).hexdigest().upper(),phase='staging')
+        (self.kit/'Restore-State.json').write_text(json.dumps(state),encoding='utf-8')
+        conflict = self.root/'原来 B.txt'
+        conflict.write_text('keep me')
+        result = self.run_script()
+        self.assertEqual(result.returncode,1)
+        self.assertIn(b'Target already exists:',result.stdout)
+        self.assertEqual(self.b.read_text(),'second')
+        self.assertEqual(temporary.read_text(),'first')
+        self.assertEqual(conflict.read_text(),'keep me')
+        conflict.unlink()
+        self.assertEqual(self.run_script().returncode,0)
+        self.assertEqual(conflict.read_text(),'second')
+
+    @unittest.skipUnless(os.environ.get('SORTZIP_INTEGRATION')=='1' and os.name=='nt','Windows script integration')
+    def test_locked_job_does_not_start_a_second_restore(self):
+        import ctypes
+        from ctypes import wintypes
+        create = ctypes.WinDLL('kernel32',use_last_error=True).CreateFileW
+        create.argtypes = [wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,wintypes.LPVOID,
+                           wintypes.DWORD,wintypes.DWORD,wintypes.HANDLE]
+        create.restype = wintypes.HANDLE
+        close = ctypes.WinDLL('kernel32',use_last_error=True).CloseHandle
+        close.argtypes = [wintypes.HANDLE]
+        write_bundle(self.kit,[(self.a,'original.txt')])
+        handle = create(str(self.kit/'Restore-Names.lock'),0x40000000,0,None,4,0x80,None)
+        self.assertNotEqual(handle,ctypes.c_void_p(-1).value)
+        try:
+            result = self.run_script()
+            self.assertEqual(result.returncode,1)
+            self.assertIn(b'Could not lock this restore job',result.stdout)
+            self.assertTrue(self.a.exists())
+        finally:
+            close(handle)
+        self.assertEqual(self.run_script().returncode,0)
+
+    @unittest.skipUnless(os.environ.get('SORTZIP_INTEGRATION')=='1' and os.name=='nt','Windows script integration')
+    def test_case_only_restore_and_unchanged_file(self):
+        write_bundle(self.kit,[(self.a,'A.txt'),(self.b,'b.txt')])
+        result = self.run_script()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual({path.name for path in self.root.glob('*.txt')},{'A.txt','b.txt'})
+        self.assertEqual((self.root/'A.txt').read_text(),'first')
+        self.assertEqual(self.b.read_text(),'second')
+        self.assertEqual(self.run_script().returncode,0)

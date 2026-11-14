@@ -32,12 +32,12 @@ def _command_text(cmd):
     return ' '.join(tr('密码:********') if arg.startswith('-p') else arg for arg in cmd)
 
 
-def _run_proc(cmd, force_cancel_check=None, wait_ms=200):
+def _run_proc(cmd, force_cancel_check=None, wait_ms=200, *, stdout_encoding='utf-8', raw_stdout=False):
     """Run a command unattended, polling every `wait_ms` ms for force-cancel."""
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
                             creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, encoding='utf-8', errors='replace')
+                            text=True, encoding=stdout_encoding, errors='replace')
     while True:
         if force_cancel_check and force_cancel_check():
             if proc.poll() is None:
@@ -51,6 +51,7 @@ def _run_proc(cmd, force_cancel_check=None, wait_ms=200):
             continue
     if force_cancel_check and force_cancel_check():
         raise ForceCancelled()
+    listing = stdout
     password = next((arg[2:] for arg in cmd[2:] if arg.startswith('-p')), '')
     stdout, stderr = redact(stdout,password), redact(stderr,password)
     if password.startswith(':'):
@@ -59,7 +60,7 @@ def _run_proc(cmd, force_cancel_check=None, wait_ms=200):
     if proc.returncode != 0:
         safe_cmd = ['-p:********' if arg.startswith('-p') else arg for arg in cmd]
         raise subprocess.CalledProcessError(proc.returncode, safe_cmd, stdout, stderr)
-    return stdout, stderr
+    return (listing if raw_stdout else stdout), stderr
 
 
 def _check_cancel(cancel_check):
@@ -401,6 +402,7 @@ def _checkpoint_path(dest_root):
 
 
 def _write_checkpoint(dest_root, data):
+    from sortzip_core.file_journal import replace_durable
     path = _checkpoint_path(dest_root)
     tmp = path.parent / f".sortzip_checkpoint_{uuid.uuid4().hex}.tmp"
     try:
@@ -408,7 +410,7 @@ def _write_checkpoint(dest_root, data):
             json.dump(data, stream, ensure_ascii=False, indent=2)
             stream.flush()
             os.fsync(stream.fileno())
-        tmp.replace(path)
+        replace_durable(tmp,path)
     except OSError as error:
         raise OSError(tr('断点写入失败，已停止清理文件: {0}', path)) from error
     finally:
@@ -967,11 +969,12 @@ def main_from_config(config, on_progress=None, cancel_check=None, force_cancel_c
     if stats is None:
         stats = {}
     stats.pop('error_detail',None)
+    stats.pop('file_lists',None)
     stats.update(files_moved=0, files_renamed=0, groups=0, groups_total=0,
                  groups_success=0, groups_failed=0, groups_skipped=0, groups_pending=0)
     if config.get('resume_from'):
         header = json.loads(Path(config['resume_from']).read_text(encoding='utf-8'))
-        if isinstance(header,dict) and header.get('schema')==4:
+        if isinstance(header,dict) and header.get('schema') in (4,5):
             from sortzip_core.task_recovery import resume
             return resume(config,stats,on_progress,cancel_check,force_cancel_check)
         if isinstance(header, dict) and header.get('kind')=='multilayer':

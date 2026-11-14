@@ -9,6 +9,7 @@ from sortzip_core.nesting import Layer, MaterializedUnit, Plan, Task, Unit
 from sortzip_core.nested_execution import _snapshot, execute_plan
 from sortzip_core.archive_tools import TOOL_NAMES, entry_name, shown_name, validate_tool_layers
 from sortzip_core.i18n import tr
+from sortzip_core import retention, file_journal
 
 
 def _relative(root, value, single=False):
@@ -41,10 +42,10 @@ def load_resume(checkpoint, passwords=None, source_roots=None, *, inspect_only=F
     if checkpoint.name != RESUME_FILE_NAME:
         raise ValueError(tr('请选择标准断点文件'))
     state = json.loads(checkpoint.read_text(encoding='utf-8'))
-    if not isinstance(state, dict) or state.get('schema') not in (2,3,4) or state.get('kind')!='multilayer':
+    if not isinstance(state, dict) or state.get('schema') not in (2,3,4,retention.SCHEMA) or state.get('kind')!='multilayer':
         raise ValueError(tr('不是有效的多层断点'))
     tool_id = 'bandizip'
-    if state['schema'] in (3,4):
+    if state['schema']>=3:
         tool_id = state.get('archive_tool')
         if not isinstance(tool_id,str) or tool_id not in TOOL_NAMES or type(state.get('output_list')) is not bool:
             raise ValueError(tr('断点的压缩工具或文件清单设置无效'))
@@ -114,6 +115,8 @@ def load_resume(checkpoint, passwords=None, source_roots=None, *, inspect_only=F
         if level==0:
             if len(set(originals))!=len(originals) or source_seen.intersection(originals):
                 raise ValueError(tr('原始文件身份重复'))
+            if state['schema']==retention.SCHEMA and inputs!=['source:'+original for original in originals]:
+                raise ValueError(tr('原始文件来源链不一致'))
             source_seen.update(originals)
         elif originals != [v for child in inputs for v in original_sets[child]]:
             raise ValueError(tr('原始文件来源链不一致'))
@@ -132,7 +135,7 @@ def load_resume(checkpoint, passwords=None, source_roots=None, *, inspect_only=F
         known[identity], original_sets[identity], last_layer = level, originals, level
         unit_folders[identity] = folder
     layers = {task.layer_index:task.settings for task in tasks}
-    if state['schema']==4:
+    if state['schema']>=4:
         from sortzip_core.resume_passwords import validate_checks
         validate_checks(state.get('password_checks'),{
             level for level,settings in layer_settings.items() if settings['password_required']})
@@ -147,12 +150,22 @@ def load_resume(checkpoint, passwords=None, source_roots=None, *, inspect_only=F
         raise ValueError(tr('中间层不能修改后缀'))
     if set(completed)!=set(t.unit.unit_id for t in tasks[:len(completed)]):
         raise ValueError(tr('已完成状态不满足依赖顺序'))
-    for task in tasks[:len(completed)]:
+    plan = Plan(tuple(tasks),final_ids)
+    cleanup = retention.validate(state,plan) if state['schema']==retention.SCHEMA else {}
+    if state.get('delivery_manifest'):
+        from sortzip_core.delivery_manifest import validate_archive,validate_plan
+        validate_plan(plan,state['file_plan'],original=state.get('delivery_original_names',False))
+    if state.get('restore_original_names') and state['schema']==retention.SCHEMA:
+        from sortzip_core.restore_bundle import validate_payload
+        validate_payload(plan,state['file_plan'])
+    for index,task in enumerate(tasks[:len(completed)]):
         record = completed[task.unit.unit_id]
         if (not isinstance(record, dict) or record.get('layer')!=task.layer_index
                 or record.get('inputs')!=list(task.input_ids) or record.get('original_ids')!=list(task.unit.original_ids)
                 or record.get('format')!=task.settings.archive_format):
             raise ValueError(tr('完成记录与计划不一致'))
+        if 'members_verified' in record and record['members_verified'] is not True:
+            raise ValueError(tr('归档成员校验记录无效'))
         folder = _relative(root, record.get('folder'))
         expected = root/f'layer-{task.layer_index+1}'/task.unit.folder
         if (folder.parent.resolve()!=expected.resolve() or not re.fullmatch(
@@ -186,26 +199,46 @@ def load_resume(checkpoint, passwords=None, source_roots=None, *, inspect_only=F
         expected_entry = next((item['shown'] for item in mapping if item['canonical']==entry_canonical), None)
         if record.get('entry')!=expected_entry or expected_entry is None:
             raise ValueError(tr('归档入口卷与格式不一致'))
-        actual = {Path(p).name:values for p,values in _snapshot(paths).items()}
-        if actual!={name:_metadata(info) for name,info in metadata.items()}:
-            raise ValueError(tr('已完成产物缺失或发生变化'))
+        if state.get('delivery_manifest'):
+            manifest = validate_archive(record.get('delivery'))
+            if (manifest['entry']!=expected_entry or manifest['tool']!=tool_id
+                    or manifest['format']!=record['format'] or manifest['stem']!=task.archive_stem
+                    or manifest['encrypted']!=state['tasks'][index]['settings']['password_required']
+                    or {(row['shown'],row['canonical'],row['size']) for row in manifest['volumes']}
+                    !={(row['shown'],row['canonical'],metadata[row['shown']][0]) for row in mapping}):
+                raise ValueError(tr('解包清单结构无效'))
+        if state['schema']==retention.SCHEMA:
+            identities = retention.archive_identity(record)
+            step = cleanup.get(task.unit.unit_id)
+            if step!='done':
+                for path in paths:
+                    candidate = file_journal.safe_path(root,Path(path).relative_to(root).as_posix())
+                    if step=='pending' and not file_journal.exists(candidate):
+                        continue
+                    if not file_journal.exists(candidate) or list(file_journal.identity(candidate))!=identities[candidate.name]:
+                        raise ValueError(tr('已完成产物缺失或发生变化：{0}', candidate))
+        else:
+            actual = {Path(p).name:values for p,values in _snapshot(paths).items()}
+            if actual!={name:_metadata(info) for name,info in metadata.items()}:
+                raise ValueError(tr('已完成产物缺失或发生变化'))
         if record.get('entry') not in metadata:
             raise ValueError(tr('归档入口卷缺失'))
-        available[task.unit.unit_id] = MaterializedUnit(tuple(paths), True)
+        if task.unit.unit_id not in cleanup:
+            available[task.unit.unit_id] = MaterializedUnit(tuple(paths), True)
     # Only still-needed initial units need their source files to remain available.
     needed = {child for task in tasks[len(completed):] for child in task.input_ids if child in sources}
-    if state['schema']!=4 or state.get('files_ready') is True:
+    if state['schema']<4 or state.get('files_ready') is True:
         for identity in needed:
             if _snapshot(available[identity].files)!={name:_metadata(info) for name,info in sources[identity].items()}:
                 raise ValueError(tr('待处理源文件发生变化'))
-    return Plan(tuple(tasks), final_ids), available, state
+    return plan, available, state
 
 
 def resume_plan(checkpoint, passwords=None, source_roots=None, **execution_options):
     from sortzip_core import engine, resume_passwords
     from sortzip_core.archive_tools import ArchiveTool, resolve_tool
     plan, available, state = load_resume(checkpoint, passwords, source_roots)
-    if state['schema']==4:
+    if state['schema']>=4:
         raise ValueError(tr('此断点必须通过主任务恢复入口打开'))
     root = Path(checkpoint).resolve().parent
     tool_id = state['archive_tool']

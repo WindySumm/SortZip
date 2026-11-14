@@ -10,7 +10,7 @@ SortZip is a Windows utility for organizing files. Sort files into folders by ex
 
 ## Download and run
 
-Choose a version from GitHub Releases and run its EXE, such as `SortZip-v1.0.1.exe`. You can sort and rename files without installing a compression tool. To compress files, install one of the tools below and select it under **Final output**. Use **Settings** in the top-right menu to set and test its executable path.
+Choose a version from GitHub Releases and run its EXE, such as `SortZip-v1.2.0.exe`. You can sort and rename files without installing a compression tool. To compress files, install one of the tools below and select it under **Final output**. Use **Settings** in the top-right menu to set and test its executable path.
 
 On first launch, SortZip follows your system's preferred display languages. It supports Simplified Chinese and English, with English as the fallback. To override this, choose **Settings → Language** and restart SortZip.
 
@@ -20,7 +20,7 @@ On first launch, SortZip follows your system's preferred display languages. It s
 | [7-Zip](https://www.7-zip.org/) · `7z.exe` | ZIP, 7Z | ZIP, 7Z |
 | [WinRAR](https://www.rarlab.com/) · `Rar.exe` | RAR5 | RAR5 |
 
-All layers in a task use the same tool. Each layer can use a different format supported by that tool. A GZ or XZ archive can contain one file. If the release includes a checksum, run `Get-FileHash .\SortZip-v1.0.1.exe -Algorithm SHA256` in the download folder and compare the result with the `.sha256` file.
+All layers in a task use the same tool. Each layer can use a different format supported by that tool. A GZ or XZ archive can contain one file. If the release includes a checksum, run `Get-FileHash .\SortZip-v1.2.0.exe -Algorithm SHA256` in the download folder and compare the result with the `.sha256` file.
 
 ## First task
 
@@ -28,7 +28,7 @@ All layers in a task use the same tool. Each layer can use a different format su
 2. **Map file types.** Under **File type mappings**, map an extension to a folder, such as `.txt` to `Documents`.
 3. **Preview names.** Under **Rename files**, set the order and add rules. For example, `Document_{n}{ext}` produces numbered names. A blank template keeps the original name.
 4. **Set up compression.** Under **Layer 1**, choose the files per archive, format, and archive naming template. Use **＋** next to the workflow heading to add another layer. Turn off **Enable compression** for a classification and renaming task.
-5. **Review and run.** Check **Final output** and optionally enable **Write file list**. Select **Keep original files** to copy source files. If you leave this option off, SortZip moves the source files. Click **Start task** when ready.
+5. **Review and run.** Under **Final output**, choose which files and archive layers to keep. A new compression profile keeps only the outermost layer by default. Select **Keep original files in the input folder** to copy source files. If you leave it off, SortZip moves them.
 
 ## Nested archives and split volumes
 
@@ -40,12 +40,22 @@ You can change the filename extension of the outermost archive. A ZIP shown as `
 
 ## Output and recovery
 
-- **File list.** With **Write file list** enabled, categories receive a tab-separated `List.txt` that can be opened in Excel. It records original relative paths and new names, plus the name of the volume to open and its standard name when compression completes.
+- **File list.** **Write file list** is off by default. When enabled, SortZip writes a UTF‑8, tab-separated `List.txt` in each category under the output folder. It records original relative paths and new filenames. For compressed tasks, it also records the actual outermost entry volume, its standard filename, and the number of archive files. The result shows how many lists are available, including any reused after resuming. Review each list before sharing it because relative paths can reveal original filenames and subfolder names. SortZip leaves the list in the output folder.
 - **Resume.** Keep the output folder, `.sortzip_resume.json`, and `.sortzip-files.sqlite3` together. Choose **Task → Resume task** or drop the checkpoint on the Task button. SortZip reuses completed steps and may ask for the original input folder or passwords.
 - **Protect checkpoints.** An encrypted task's checkpoint stores password verification data that allows offline guessing attempts. Keep checkpoints private when sharing archives.
-- **Output space.** SortZip keeps classified files and intermediate archives. Use a separate output folder when starting another task.
+- **Disk space.** The confirmation shows free space, estimated writes, and the stage with the highest estimated space usage on each volume. It also shows the largest inner layers you chose to keep. SortZip stops if a copy cannot fit. You can proceed if only the compression estimate is tight, or resume after freeing space.
+- **Cleanup.** SortZip removes working files and unselected inner archives only after the next layer passes its integrity and member checks and the checkpoint is saved. A missing file or volume stops cleanup for that group. Classification-only tasks keep the classified files. When resuming an older checkpoint, SortZip keeps any inputs still present for groups without a recorded member check.
+- **Restore original filenames.** Enable **Include original filename restoration scripts** under **Final output** when you want recipients to see the original filenames. Extract each layer manually and give each innermost archive its own folder. Run `SortZip-Restore-Names.cmd` there. It verifies files and reports the path of any conflict before proceeding. If interrupted, keep the extracted files, temporary files and restore files together, then run the same command again. GZ and XZ cannot include the script.
 
 Open **User Guide** from the top-right menu for more details.
+
+## Unpack nested SortZip archives
+
+Under **Final output**, enable **Create automatic unpack manifest**. Share each complete outer volume set and its accompanying `.sortzip.json`. This workflow supports SortZip deliveries in ZIP, 7Z, or RAR5, using the corresponding command-line tool installed on the recipient's computer. The external manifest reveals the outer format and standard volume names. Enable **Include mapping for automatic original-name restoration** to put the original names inside the innermost archive. To keep those names private, also leave the standalone rename script disabled and review any `List.txt` before sharing it.
+
+Choose **Task → Unpack and restore**, select the manifests, and choose an output folder. Each delivery has its own result folder, with a separate subfolder for each innermost group. Original names are restored by default when a mapping is available. You can keep the renamed filenames or retain extracted inner archives. The delivered outer volumes stay in place. To resume, select the same manifests and output folder and re-enter passwords.
+
+Share passwords separately. SortZip tries the task's password list in order. If 7-Zip reports that a password may be wrong, SortZip tries the remaining entries. If none work, it explains that the archive may be damaged and lets you enter another password or cancel and check the archive. Confirmed missing volumes and checksum mismatches stop the task. Passwords are kept in task memory. Software with access to local process arguments may see a password while an archive tool runs.
 
 ## Run from source
 

@@ -197,6 +197,28 @@ class WorkbenchTests(unittest.TestCase):
             time.sleep(.005)
         self.assertTrue(predicate(),'timed out')
 
+    def test_unpack_menu_runs_password_prompt_on_main_thread(self):
+        from PySide6.QtCore import QThread
+        from PySide6.QtWidgets import QInputDialog
+        w = self.window
+        self.assertFalse(w.delivery_manifest.isChecked())
+        self.assertFalse(w.delivery_original.isEnabled())
+        w.delivery_manifest.setChecked(True)
+        self.assertTrue(w.delivery_original.isEnabled())
+        config = dict(dest=str(self.root/'unpack-output'),unpack_manifests=['sample.sortzip.json'])
+        def run(settings,stats,progress,cancel,force,prompt):
+            self.assertNotEqual(QThread.currentThread(),_application.thread())
+            self.assertEqual(prompt(2,'sample.data',True),'typed once')
+            return 'completed'
+        with patch('sortzip_core.unpack_dialog.choose_task',return_value=config),patch(
+                'sortzip_core.unpack.run',side_effect=run),patch.object(
+                QInputDialog,'getText',return_value=('typed once',True)) as dialog:
+            w.commands['unpack'].trigger()
+            self.wait(lambda:bool(self.results))
+            dialog.assert_called_once()
+            self.assertIn('7-Zip',dialog.call_args.args[2])
+        self.assertEqual(self.results[0][1]['status'],'completed')
+
     def dispose(self):
         from shiboken6 import isValid
         if isValid(self.window):
@@ -1095,9 +1117,11 @@ class WorkbenchTests(unittest.TestCase):
         w.layer_editor.rename.setChecked(True)
         w.layer_editor.suffix.setText('.png')
         w.output_list.setChecked(True)
+        self.assertIn('List.txt',w.output_list.toolTip())
         w._run()
         self.wait(lambda:bool(self.results),30)
         self.assertEqual(self.results[0][1]['status'],'completed',self.errors)
+        self.assertEqual(self.results[0][0]['file_lists'],1)
         checkpoint = self.root/'out'/'.sortzip_resume.json'
         result = inspect_resume(dict(resume_from=str(checkpoint)),0)
         self.assertFalse(result.error)
@@ -1127,3 +1151,4 @@ class WorkbenchTests(unittest.TestCase):
         w.structure_history.stack.undo()
         self.assertEqual(len(w.state.layers),1)
         self.assertEqual(self.results[-1][1]['status'],'completed')
+        self.assertEqual(self.results[-1][0]['file_lists'],1)

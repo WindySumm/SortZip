@@ -73,12 +73,43 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         tool_field = QFormLayout()
         tool_field.addRow(tr('压缩工具'),self.archive_tool_combo)
         self.final_page.layout().insertLayout(0,tool_field)
+        self.keep.setText(tr('保留输入目录中的原始文件'))
+        final_layout = self.final_page.layout()
+        index = final_layout.indexOf(self.keep)
+        self.retention_heading = QLabel(tr('保留产物'))
+        self.retention_heading.setObjectName('SectionTitle')
+        final_layout.insertWidget(index,self.retention_heading)
+        shortcuts = QHBoxLayout()
+        for label,keep in ((tr('仅保留最外层'),False),(tr('全部保留'),True)):
+            button = QPushButton(label)
+            button.clicked.connect(lambda checked,value=keep:self._set_retention(value))
+            shortcuts.addWidget(button)
+        shortcuts.addStretch()
+        self.retention_options = QWidget()
+        self.retention_layout = QVBoxLayout(self.retention_options)
+        self.retention_layout.setContentsMargins(0,0,0,0)
+        final_layout.insertLayout(index+1,shortcuts)
+        final_layout.insertWidget(index+3,self.retention_options)
+        self.retention_shortcuts = shortcuts
+        self.restore_original_names = StateCheckBox(tr('随包附带原始文件名还原脚本'))
+        self.restore_original_names.setToolTip(tr('手动解压各组后运行脚本，可校验文件并恢复原名。随包映射包含原始文件名，请按需启用。'))
+        final_layout.insertWidget(final_layout.indexOf(self.output_list)+1,self.restore_original_names)
+        self.restore_original_names.toggled.connect(self.change)
+        self.delivery_manifest = StateCheckBox(tr('生成自动解包清单'))
+        self.delivery_manifest.setToolTip(tr('包外清单会公开外层格式和标准卷名。'))
+        self.delivery_original = StateCheckBox(tr('附带自动恢复原名的映射'))
+        self.delivery_original.setToolTip(tr('将原文件名写入最内层归档。随包改名脚本和 List.txt 由各自的选项控制，也可能公开原名。'))
+        for offset,control in enumerate((self.delivery_manifest,self.delivery_original),1):
+            final_layout.insertWidget(final_layout.indexOf(self.restore_original_names)+offset,control)
+            control.toggled.connect(self.change)
+        self._retention_signature = None
         self.archive_tool_combo.currentIndexChanged.connect(self._archive_tool_changed)
         self.navigation.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.edit_scroll.setMinimumHeight(130)
         self.preview_tabs.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Ignored)
         self.controller = TaskController(self,factory=task_factory)
         self.controller.active.connect(self._set_task_active)
+        self.controller.unpack_password_requested.connect(self._answer_unpack_password)
         self.controller.log.connect(self._append_log)
         self.controller.progress.connect(self._update_progress)
         self.controller.failed.connect(self._task_error)
@@ -203,7 +234,8 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
     def _populate_controls(self):
         with loading_controls(self,self.source,self.destination,self.recursive_cb,
                 self.compression_cb,self.keep_hierarchy_cb,self.keep,self.output_list,self.sort_combo,
-                self.mapping_table,self.naming.table,self.naming,self.archive_tool_combo):
+                self.mapping_table,self.naming.table,self.naming,self.archive_tool_combo,self.restore_original_names,
+                self.delivery_manifest,self.delivery_original):
             self.source.setText(self.state.source)
             self.destination.setText(self.state.destination)
             for widget,value in ((self.recursive_cb,self.state.recursive),(self.compression_cb,self.state.compression_enabled),
@@ -211,6 +243,9 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
                 widget.setChecked(value)
             self.sort_combo.setCurrentIndex(max(0,self.sort_combo.findData(self.state.sort_by)))
             self.archive_tool_combo.setCurrentIndex(self.archive_tool_combo.findData(self.state.archive_tool))
+            self.restore_original_names.setChecked(self.state.restore_original_names)
+            self.delivery_manifest.setChecked(self.state.delivery_manifest)
+            self.delivery_original.setChecked(self.state.delivery_original_names)
             for table,rows,flags in ((self.mapping_table,self.state.mappings,self.state.mapping_enabled),
                                      (self.naming.table,self.state.rules,self.state.rule_enabled)):
                 table.setRowCount(0)
@@ -251,6 +286,9 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
             self.state.recursive = self.recursive_cb.isChecked()
             self.state.keep_hierarchy = self.keep_hierarchy_cb.isChecked()
             self.state.keep_files,self.state.output_list = self.keep.isChecked(),self.output_list.isChecked()
+            self.state.restore_original_names = self.restore_original_names.isChecked()
+            self.state.delivery_manifest = self.delivery_manifest.isChecked()
+            self.state.delivery_original_names = self.delivery_original.isChecked()
             self.state.compression_enabled = self.compression_cb.isChecked()
             self.state.sort_by = self.sort_combo.currentData()
             if old_mappings!=self.state.mappings:
@@ -283,11 +321,63 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
     def _sync_compression_ui(self):
         enabled = self.state.compression_enabled and not self._task_busy()
         self.archive_tool_combo.setEnabled(enabled)
+        self.restore_original_names.setEnabled(enabled)
+        self.delivery_manifest.setEnabled(enabled)
+        self.delivery_original.setEnabled(enabled and self.state.delivery_manifest)
+        self.retention_options.setVisible(self.state.compression_enabled)
+        for index in range(self.retention_shortcuts.count()-1):
+            self.retention_shortcuts.itemAt(index).widget().setVisible(self.state.compression_enabled)
+        if not self._task_busy():
+            self._refresh_retention()
         self.layer_editor.setEnabled(enabled)
         self.add_btn.setEnabled(enabled)
         self.copy_btn.setEnabled(enabled and self.draft() is not None)
         self.remove_btn.setEnabled(enabled and self.draft() is not None and len(self.state.layers)>1)
         self._sync_action_states()
+
+    def _set_retention(self,keep,through=None):
+        if self._task_busy():
+            return
+        for index,draft in enumerate(self.state.layers[:-1]):
+            if through is None or index<=through:
+                draft.data['retain'] = keep
+        if through is None:
+            with loading_controls(self,self.keep):
+                self.keep.setChecked(keep)
+        self.change()
+
+    def _toggle_retained_layer(self,draft,checked):
+        draft.data['retain'] = checked
+        # Keep the existing checkbox alive while its signal is being handled.
+        self._retention_signature = self._retention_values()
+        self.change()
+
+    def _retention_values(self):
+        return tuple((draft.key,bool(draft.data.get('retain'))) for draft in self.state.layers)
+
+    def _refresh_retention(self):
+        values = self._retention_values()
+        if values==self._retention_signature:
+            return
+        self._retention_signature = values
+        while self.retention_layout.count():
+            self.retention_layout.takeAt(0).widget().deleteLater()
+        for index,draft in enumerate(self.state.layers):
+            row = QWidget()
+            layout = QHBoxLayout(row)
+            layout.setContentsMargins(0,0,0,0)
+            outer = index==len(self.state.layers)-1
+            checkbox = StateCheckBox(tr('第 {0} 层（最外层）',index+1) if outer else tr('第 {0} 层',index+1))
+            checkbox.setChecked(outer or bool(draft.data.get('retain')))
+            checkbox.setEnabled(not outer)
+            checkbox.toggled.connect(lambda checked,item=draft:self._toggle_retained_layer(item,checked))
+            layout.addWidget(checkbox)
+            layout.addStretch()
+            if not outer:
+                button = QPushButton(tr('保留此层及内层'))
+                button.clicked.connect(lambda checked,i=index:self._set_retention(True,i))
+                layout.addWidget(button)
+            self.retention_layout.addWidget(row)
 
     def _archive_tool_changed(self,*args):
         if self._loading or self._task_busy():
@@ -359,8 +449,9 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
             return
         self.notice.setText(tr('已扫描 {0} 个文件，匹配 {1} 个。', result.total_files, len(result.entries))+
             (tr('存在未匹配类型，可使用“映射全部”。') if result.total_files>len(result.entries) else tr('预览只读，确认执行后才处理文件。')))
-        self.summary.setText(tr('输出目录：{0}\n\n匹配 {1} 个文件。', self.state.destination or tr('尚未选择'), len(result.entries))+(tr('共 {0} 层，最外层 {1} 个完整单元。', len(self.state.layers), len(result.plan.final_ids)) if self.state.compression_enabled else tr('未启用压缩，只执行分类、命名与可选清单。'))+
-            tr('\n\n保留原始文件时分类仅复制；否则会移动原文件。当前多层流程仍保留中间产物和完成断点。'))
+        self.summary.setText(tr('输出目录：{0}\n\n匹配 {1} 个文件。', self.state.destination or tr('尚未选择'), len(result.entries))+
+            (tr('共 {0} 层，最外层 {1} 个完整单元。', len(self.state.layers), len(result.plan.final_ids)) if self.state.compression_enabled
+             else tr('未启用压缩，只执行分类、命名与可选清单。')))
         if not self.state.compression_enabled:
             self.preview_status.setText(tr('未启用压缩：只执行分类、命名和可选清单。')+(' '+result.file_error if result.file_error else ''))
             for index in range(self.navigation.count()):
@@ -540,23 +631,35 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
     def _summary_text(self,config,result):
         lines = [tr('输入目录：{0}', config["src"]),tr('输出目录：{0}', config["dest"]),
             tr('匹配 {0} 个文件；未匹配 {1} 个文件。', len(result.entries), result.total_files-len(result.entries)),
-            tr('原始文件：')+(tr('保留（复制）') if config.get('keep_files') else tr('移动到输出目录')),
+            tr('原始文件：')+(tr('保留（复制）') if config.get('keep_files') else (
+                tr('移动并在归档后清理工作文件') if config['first_compress'] else tr('移动到输出目录'))),
             tr('目录层级：')+(tr('保留') if config.get('keep_hierarchy') else tr('分类内平铺')),
-            tr('文件对应清单：')+(tr('输出') if config.get('output_list') else tr('不输出'))]
+            tr('文件对应清单：')+(tr('输出 List.txt（含原相对路径及新文件名，分享前请核对）') if config.get('output_list') else tr('不输出'))]
         if config['first_compress']:
+            retained = [index+1 for index in config.get('retain_layers',())]
+            lines.append(tr('保留归档层：{0}', ', '.join(map(str, [*retained,len(config['compression_layers'])]))))
+            if config.get('restore_original_names'):
+                lines.append(tr('随包附带原始文件名还原脚本'))
+            if config.get('delivery_manifest'):
+                lines.extend((tr('生成自动解包清单'),tr('包外清单会公开外层格式和标准卷名。')))
+                if config.get('delivery_original_names'):
+                    lines.append(tr('附带自动恢复原名的映射'))
             lines.append(tr('压缩工具：')+TOOL_NAMES[config.get('archive_tool','bandizip')])
             tool = config.get('_archive_tool')
             if tool:
                 lines.append(tr('命令行程序：')+tool.executable)
             for index,layer in enumerate(config['compression_layers']):
+                automatic_verify = index==0 or (index-1 not in config.get('retain_layers',()))
                 lines.append(tr('第 {0} 层：{1} · 每包 {2} ', index+1, layer.archive_format.upper(), layer.group_size)+
                     (tr('文件') if index==0 else tr('完整单元'))+tr(' · 模板 {0}', layer.name_template)+
                     (tr(' · 分卷 ')+str(layer.volume) if layer.enable_volume else '')+
-                    (tr(' · 已设置密码') if layer.password else '')+(tr(' · 校验') if layer.verify else '')+
+                    (tr(' · 已设置密码') if layer.password else '')+(tr(' · 校验') if layer.verify or automatic_verify else '')+
                     (tr(' · 后缀 ')+layer.suffix if layer.suffix else ''))
             lines.append(tr('最外层 {0} 个完整单元；分卷数量及压缩后大小执行后确定。', len(result.plan.final_ids)))
         else:
             lines.append(tr('未启用压缩。'))
+        if config.get('_space_report'):
+            lines.extend(('',config['_space_report']))
         return '\n'.join(lines)
 
     def review_summary(self):
@@ -571,7 +674,7 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         QMessageBox.information(self,tr('参数摘要'),text)
 
     def _confirm_config(self,result):
-        if not self.state.confirm_config:
+        if not self.state.confirm_config and not result.prepared.get('_space_warning'):
             return True
         return QMessageBox.question(self,tr('确认执行'),self._summary_text(result.prepared,result)+
             tr('\n\n将按这份预检快照执行，是否开始？'),QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,
@@ -676,6 +779,31 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         if path:
             self._start_resume(path)
 
+    def _import_unpack(self):
+        from sortzip_core.unpack_dialog import choose_task
+        if self._task_busy():
+            return
+        config = choose_task(self,self.destination.text())
+        if config:
+            config['archive_tool_paths'] = dict(self.state.archive_tool_paths)
+            self.log.clear()
+            self.controller.launch(config)
+
+    @Slot(object)
+    def _answer_unpack_password(self,reply):
+        from PySide6.QtWidgets import QInputDialog
+        ready,_,layer,entry,ambiguous = reply
+        try:
+            if not self._closing and self._task_busy():
+                location = tr('第 {0} 层：{1}',layer,entry) if layer else tr('最外层：{0}',entry)
+                if ambiguous:
+                    location += '\n\n'+tr('已试完密码清单。7-Zip 无法区分密码不符和归档数据异常。可输入新密码，或取消并检查归档。')
+                value,accepted = QInputDialog.getText(self,tr('解包密码'),location,QLineEdit.EchoMode.Password)
+                if accepted and value:
+                    reply[1] = value
+        finally:
+            ready.set()
+
     def _start_resume(self,path):
         if not self._task_busy():
             self.change()
@@ -692,7 +820,8 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
                 return None
             approval['approved_input_root'] = result.input_root
         if result.kind=='file_task':
-            if not self._confirm_resume(tr('分类与改名断点：{0}\n共 {1} 个文件，继续未完成的操作？', result.path, len(result.groups))):
+            space = '\n\n'+result.space_report if result.space_report else ''
+            if not self._confirm_resume(tr('分类与改名断点：{0}\n共 {1} 个文件，继续未完成的操作？', result.path, len(result.groups))+space):
                 return None
             return dict(resume_from=result.path,dest=destination,**approval)
         tool = result.tool_config.get('_archive_tool')
@@ -712,6 +841,10 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
             if result.unverified_layers:
                 levels = '、'.join(str(index+1) for index in result.unverified_layers)
                 unverified = tr('\n旧断点第 {0} 层没有已完成归档可验证密码。请确认输入的是原密码。', levels)
+            if result.space_report:
+                unverified += '\n\n'+result.space_report
+            if result.preserved_units:
+                unverified += '\n\n'+tr('旧断点有 {0} 个输入单元未记录归档成员校验。现存文件将保留。',result.preserved_units)
             if not self._confirm_resume(tr('多层断点：{0}\n压缩工具：{1}\n共 {2} 组，已完成 {3} 组，待处理 {4} 组。\n复用已完成产物；未完成组写入新的重试目录。', result.path, tool_label, total, done, total-done)+unverified):
                 return None
             self._show_resume_plan(result,passwords)
@@ -756,6 +889,13 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         levels = max(task.layer_index for task in result.plan.tasks)+1
         state.layers = [draft_from_layer(replace(next(t.settings for t in result.plan.tasks if t.layer_index==index),
             password=passwords.get(index,''))) for index in range(levels)]
+        state.keep_files = result.config.get('keep_files',True)
+        state.restore_original_names = result.config.get('restore_original_names',False)
+        state.delivery_manifest = result.config.get('delivery_manifest',False)
+        state.delivery_original_names = result.config.get('delivery_original_names',False)
+        state.output_list = result.config.get('output_list',False)
+        for index,draft in enumerate(state.layers[:-1]):
+            draft.data['retain'] = index in result.config.get('retain_layers',range(levels-1))
         entries = []
         for identity,paths in result.available.items():
             if identity.startswith('source:'):

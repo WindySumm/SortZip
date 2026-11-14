@@ -6,7 +6,7 @@ import secrets
 import sqlite3
 from time import monotonic
 
-from sortzip_core import engine, file_journal as files, nested_pipeline, resume_passwords
+from sortzip_core import engine, file_journal as files, nested_pipeline, resume_passwords, retention
 from sortzip_core.constants import RESUME_FILE_NAME
 from sortzip_core.nested_execution import execute_plan, task_specs
 from sortzip_core.nested_resume import load_resume
@@ -18,7 +18,7 @@ def read_state(path,*,state=None):
         raise ValueError(tr('请选择标准断点文件'))
     if state is None:
         state = json.loads(path.read_text(encoding='utf-8'))
-    if (not isinstance(state,dict) or state.get('schema')!=4 or
+    if (not isinstance(state,dict) or state.get('schema') not in (4,retention.SCHEMA) or
             state.get('kind') not in ('multilayer','file_task') or
             not isinstance(state.get('job'),str) or not re.fullmatch('[0-9a-f]{32}',state['job']) or
             not isinstance(state.get('file_plan'),list) or not state['file_plan'] or
@@ -39,6 +39,13 @@ def read_state(path,*,state=None):
         for task in state.get('tasks',[]):
             if task['layer']==0 and any(expected_folders.get(source)!=task['folder'] for source in task['inputs']):
                 raise ValueError(tr('分类与归档计划目录不一致'))
+    if state['schema']==retention.SCHEMA and (state['kind']!='multilayer'
+            or type(state.get('restore_original_names')) is not bool):
+        raise ValueError(tr('断点产物保留设置无效'))
+    if (any(type(state.get(key,False)) is not bool for key in ('delivery_manifest','delivery_original_names'))
+            or state.get('delivery_original_names') and not state.get('delivery_manifest')
+            or state.get('delivery_manifest') and state['schema']!=retention.SCHEMA):
+        raise ValueError(tr('解包清单结构无效'))
     return state,operations
 
 
@@ -90,6 +97,14 @@ def start(config,stats,on_progress,cancel_check,force_cancel_check):
                  files_ready=False,archive_tool=config.get('archive_tool','bandizip') if plan else None,
                  tasks=task_specs(plan) if plan else [],completed={},final_ids=list(plan.final_ids) if plan else [],
                  password_checks=resume_passwords.make_checks(nested_pipeline.prepare_layers(config)) if plan else {})
+    if plan and (config.get('retain_layers') is not None or config.get('delivery_manifest')):
+        keep = config.get('retain_layers')
+        outer = plan.tasks[-1].layer_index
+        state.update(schema=retention.SCHEMA,retain_layers=list(range(outer) if keep is None else keep),cleanup={},
+                     restore_original_names=bool(config.get('restore_original_names')))
+        if config.get('delivery_manifest'):
+            state.update(delivery_manifest=True,delivery_original_names=bool(config.get('delivery_original_names')))
+        retention.validate(state,plan)
     operations = list(files.steps(root,state))
     state['sources'] = {'source:'+entry['source_rel']:{str(step.target):list(step.source_id[2:])}
                         for entry,step in zip(entries,operations,strict=True)}
@@ -175,7 +190,9 @@ def _continue(root,config,state,db,operations,stats,on_progress,cancel_check,for
         state['files_ready'] = True
         engine._write_checkpoint(root,state)
     elif state['kind']=='file_task' or len(state['completed'])<len(state['tasks']):
-        files.verify_ready(db,operations)
+        cleaned = state.get('cleanup',{})
+        files.verify_ready(db,operations,skip={item.index for row,item in zip(state['file_plan'],operations,strict=True)
+                                               if 'source:'+row['source_rel'] in cleaned})
     if engine._check_cancel(cancel_check):
         return engine._cancel_status(force_cancel_check)
     if state['kind']=='file_task':
@@ -186,12 +203,23 @@ def _continue(root,config,state,db,operations,stats,on_progress,cancel_check,for
                 folder = item.target.parent
                 counts[folder] = counts.get(folder,0)+1
                 contents.setdefault(folder,[]).append((counts[folder],row['source_rel'],item.target.name))
-            nested_pipeline.write_lists(contents,('序号','原文件名','新文件名'))
+            stats['file_lists'] = nested_pipeline.write_lists(contents,('序号','原文件名','新文件名'))
+        else:
+            stats['file_lists'] = 0
         return 'completed'
     checkpoint = engine._checkpoint_path(root)
     passwords = config.get('layer_passwords') or {}
     if not config.get('resume_from'):
         passwords = {index:layer.password for index,layer in enumerate(nested_pipeline.prepare_layers(config))}
     plan,available,validated = load_resume(checkpoint,passwords)
+    cleanup = None
+    if validated['schema']==retention.SCHEMA:
+        preserved = retention.unverified_cleanup(plan,validated)
+        if preserved:
+            print(tr('旧断点有 {0} 个输入单元未记录归档成员校验。现存文件将保留。',len(preserved)))
+        cleanup = retention.Cleanup(root,plan,validated,operations,db,engine._write_checkpoint)
+        cleanup.replay(cancel_check)
+        if engine._check_cancel(cancel_check):
+            return engine._cancel_status(force_cancel_check)
     return nested_pipeline._run(plan,available,root,config,stats,on_progress,cancel_check,
-                                force_cancel_check,execute_plan,validated)
+                                force_cancel_check,execute_plan,validated,cleanup=cleanup)

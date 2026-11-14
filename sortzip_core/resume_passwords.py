@@ -104,7 +104,7 @@ def verify(root,tool,plan,state,passwords,cancel_check=None,force_cancel_check=N
         if cancel_check and cancel_check():
             return False
         password = passwords[layer]
-        if state['schema']==4:
+        if state['schema']>=4:
             check = state['password_checks'][str(layer)]
             if not hmac.compare_digest(_derive(password,bytes.fromhex(check['salt'])),bytes.fromhex(check['digest'])):
                 raise ValueError(tr('第 {0} 层密码与原任务不一致', layer+1))

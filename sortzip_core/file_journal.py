@@ -130,20 +130,31 @@ def digest(path,cancelled=None):
         return result.hexdigest()
 
 
+def _windows_move(source,target,*,replace=False):
+    import ctypes
+    from ctypes import wintypes
+    move = ctypes.WinDLL('kernel32',use_last_error=True).MoveFileExW
+    move.argtypes = [wintypes.LPCWSTR,wintypes.LPCWSTR,wintypes.DWORD]
+    move.restype = wintypes.BOOL
+    if not move(str(source),str(target),0x8 | (0x1 if replace else 0)):
+        code = ctypes.get_last_error()
+        if code==17:
+            raise OSError(errno.EXDEV,tr('跨盘移动需要先复制'),str(source))
+        raise ctypes.WinError(code)
+
+
+def replace_durable(source,target):
+    if os.name=='nt':
+        _windows_move(source,target,replace=True)
+    else:
+        source.replace(target)
+        _sync_dir(target.parent)
+
+
 def rename_new(source,target):
     """Publish without overwriting an existing name."""
     if os.name=='nt':
-        import ctypes
-        from ctypes import wintypes
-        move = ctypes.WinDLL('kernel32',use_last_error=True).MoveFileExW
-        move.argtypes = [wintypes.LPCWSTR,wintypes.LPCWSTR,wintypes.DWORD]
-        move.restype = wintypes.BOOL
-        # Write through and never replace or implicitly copy across volumes.
-        if not move(str(source),str(target),0x8):
-            code = ctypes.get_last_error()
-            if code==17:
-                raise OSError(errno.EXDEV,tr('跨盘移动需要先复制'),str(source))
-            raise ctypes.WinError(code)
+        _windows_move(source,target)
     else:
         os.link(source,target)
         _sync_dir(target.parent)
@@ -271,6 +282,7 @@ def _classify(db,item,keep,step,file_id):
             record(db,item.index,'classified',file_id)
             return
     if step=='copy':
+        from sortzip_core.disk_space import check_write
         item.original()
         if exists(target):
             raise ValueError(tr('分类位置已占用：{0}', target))
@@ -279,6 +291,7 @@ def _classify(db,item,keep,step,file_id):
             # an ambiguous file. Preserve it and stop, rather than truncate it.
             if exists(item.copy):
                 raise ValueError(tr('复制暂存位置已占用：{0}', item.copy))
+            check_write(target,item.source_id[2],tr('分类复制'))
             with item.copy.open('xb') as output:
                 info = os.fstat(output.fileno())
                 file_id = (info.st_dev,info.st_ino)
@@ -291,6 +304,7 @@ def _classify(db,item,keep,step,file_id):
             if (os.fstat(output.fileno()).st_dev,os.fstat(output.fileno()).st_ino)!=file_id:
                 raise ValueError(tr('复制暂存文件已被替换：{0}', item.copy))
             output.truncate(0)
+            check_write(target,item.source_id[2],tr('分类复制'))
             shutil.copyfileobj(incoming,output)
             output.flush()
             shutil.copystat(source,item.copy)
@@ -334,7 +348,7 @@ def _rename(db,item,step,file_id,stage):
         item.check(target,file_id)
 
 
-def verify_ready(db,files):
+def ready_identities(db,files):
     recorded = {index:(step,(device,inode)) for index,step,device,inode in
                 db.execute('SELECT id,step,device,inode FROM operations')}
     if phase(db)!='ready' or len(recorded)!=len(files):
@@ -343,7 +357,14 @@ def verify_ready(db,files):
         step,file_id = recorded.get(item.index,(None,None))
         if step!='done':
             raise ValueError(tr('文件日志完成状态无效'))
-        item.check(item.target,file_id)
+    return {index:file_id for index,(_,file_id) in recorded.items()}
+
+
+def verify_ready(db,files,*,skip=()):
+    identities = ready_identities(db,files)
+    for item in files:
+        if item.index not in skip:
+            item.check(item.target,identities[item.index])
 
 
 def run(db,files,keep,stats,on_progress,cancelled):

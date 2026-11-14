@@ -1,5 +1,6 @@
 """Background execution and thread creation; UI presentation stays in app/widgets."""
 import sys
+from threading import Event
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 from sortzip_core.engine import main_from_config, redact
@@ -23,6 +24,7 @@ class Worker(QObject):
     progress = Signal(int, int, str)
     cancel_waiting = Signal()
     finished = Signal()
+    unpack_password_requested = Signal(object)
 
     def __init__(self, config):
         super().__init__()
@@ -46,14 +48,28 @@ class Worker(QObject):
     def _force_cancel_check(self):
         return self._force_cancelled
 
+    def _unpack_password(self,layer,entry,ambiguous=False):
+        reply = [Event(),None,layer,entry,ambiguous]
+        self.unpack_password_requested.emit(reply)
+        while not reply[0].wait(.1):
+            if self._cancelled:
+                return None
+        return reply[1]
+
     @Slot()
     def run(self):
         old_stdout = sys.stdout
         sys.stdout = LogStream(self.log)
         try:
+            progress = lambda start,end,cur,total,msg:self._report_progress(start,end,cur,total,msg)
+            if 'unpack_manifests' in self.config:
+                from sortzip_core.unpack import run
+                self.status = run(self.config,self.stats,progress,self._cancel_check,
+                                  self._force_cancel_check,self._unpack_password)
+                return
             self.status = main_from_config(
                 self.config,
-                on_progress=lambda start, end, cur, total, msg: self._report_progress(start, end, cur, total, msg),
+                on_progress=progress,
                 cancel_check=self._cancel_check,
                 force_cancel_check=self._force_cancel_check,
                 stats=self.stats,
@@ -66,6 +82,7 @@ class Worker(QObject):
             self.stats.setdefault('error_detail',message)
             self.error.emit(message)
         finally:
+            self.config.pop('unpack_passwords',None)
             sys.stdout = old_stdout
             self.finished.emit()
 

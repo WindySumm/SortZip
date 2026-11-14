@@ -1,7 +1,9 @@
 """Execute and checkpoint complete multi-layer archive units."""
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import subprocess
+from tempfile import TemporaryDirectory
 import uuid
 
 from sortzip_core import engine
@@ -9,6 +11,10 @@ from sortzip_core.constants import validate_win_folder_name
 from sortzip_core.nesting import MaterializedUnit, resolve_inputs
 from sortzip_core.archive_tools import ArchiveTool, resolve_tool, shown_name, validate_tool_layers
 from sortzip_core.i18n import tr
+from sortzip_core.disk_space import archive_estimate, check_write
+from sortzip_core import file_journal, retention
+from sortzip_core.restore_bundle import write_bundle
+from sortzip_core import archive_members, delivery_manifest
 
 
 @dataclass
@@ -50,11 +56,12 @@ def _snapshot(paths):
 
 def execute_plan(plan, inputs, destination, bandizip='bz', cancel_check=None,
                  force_cancel_check=None, on_progress=None, _resume_state=None,auto_close=True,
-                 *, archive_tool=None, output_list=False):
+                 *, archive_tool=None, output_list=False, cleanup=None, on_space_warning=None):
     """Execute a fresh plan, publishing complete units only after persistence.
 
     Every input binding must already describe a complete unit. The filesystem is
-    rechecked before/after each compression. No input is deleted, on any outcome.
+    rechecked before/after each compression. Only the official task's cleanup
+    journal can release consumed inputs.
     Persisted output names are relative; passwords are never serialized.
     The legacy auto_close argument is accepted for callers of older versions.
     """
@@ -101,6 +108,9 @@ def execute_plan(plan, inputs, destination, bandizip='bz', cancel_check=None,
         engine._write_checkpoint(root, data)
     else:
         data = _resume_state
+    restore_names = data['schema']==retention.SCHEMA and data['restore_original_names']
+    delivery_enabled = data.get('delivery_manifest',False)
+    file_rows = {row['source_rel']:row for row in data['file_plan']} if restore_names or delivery_enabled else {}
     for index, task in enumerate(plan.tasks):
         if task.unit.unit_id in records:
             continue
@@ -115,19 +125,39 @@ def execute_plan(plan, inputs, destination, bandizip='bz', cancel_check=None,
             names = [Path(path).name.casefold() for path in paths]
             if len(names) != len(set(names)):
                 raise ValueError(tr('输入归档成员同名，不能无损打包'))
-            folder.mkdir(parents=True)
             settings = task.settings
             canonical = folder/(task.archive_stem+'.'+settings.archive_format)
             volume = (settings.volume or engine.get_auto_volume(sum(v[0] for v in before.values()))) if settings.enable_volume else None
             stage = tr('创建归档')
-            with tool.create_command(canonical,list(before),settings,volume) as command:
-                print(tr('{0} 第 {1} 层：{2}', tool.name, task.layer_index+1, engine._command_text(command)))
-                engine._run_proc(command,force_cancel_check)
+            warning = check_write(folder,archive_estimate([value[0] for value in before.values()]),stage,estimate=True)
+            if warning and on_space_warning:
+                on_space_warning(index,len(plan.tasks),warning)
+            folder.mkdir(parents=True)
+            members = list(before)
+            if (restore_names and not task.layer_index) or delivery_enabled:
+                with TemporaryDirectory(prefix='.sortzip-restore-',dir=folder) as temporary:
+                    if restore_names and not task.layer_index:
+                        kit = write_bundle(Path(temporary)/'payload',[
+                            (available[child].files[0],Path(original).name,file_rows[original]['sha256'])
+                            for child,original in zip(task.input_ids,task.unit.original_ids,strict=True)],embedded=True)
+                        members.extend(str(path) for path in sorted(kit.iterdir()))
+                    if delivery_enabled:
+                        manifest = Path(temporary)/delivery_manifest.MEMBER
+                        manifest.write_bytes(delivery_manifest.encode(delivery_manifest.inner_manifest(
+                            task,members,data,file_rows,cancel=force_cancel_check)))
+                        members.append(str(manifest))
+                    _compress(tool,canonical,members,settings,volume,task.layer_index,force_cancel_check)
+            else:
+                _compress(tool,canonical,members,settings,volume,task.layer_index,force_cancel_check)
             stage = tr('检查归档及分卷')
             artifacts,entry = tool.collect(canonical,settings)
-            if settings.verify or (tool_id!='bandizip' and entry!=canonical):
+            verifies_members = cleanup is not None and task.unit.unit_id in cleanup.eligible_by_consumer
+            if settings.verify or (tool_id!='bandizip' and entry!=canonical) or verifies_members or delivery_enabled:
                 stage = tr('完整性校验')
                 engine._run_proc(tool.test_command(entry,settings.password),force_cancel_check)
+            if verifies_members or delivery_enabled:
+                stage = tr('核对归档成员')
+                archive_members.verify(tool,entry,settings,members,force_cancel_check)
             stage = tr('复核输入')
             if _snapshot(paths) != before:
                 raise ValueError(tr('压缩期间输入文件发生变化'))
@@ -151,14 +181,28 @@ def execute_plan(plan, inputs, destination, bandizip='bz', cancel_check=None,
                 original_ids=list(task.unit.original_ids), format=settings.archive_format,
                 folder=folder.relative_to(root).as_posix(), entry=entry_name, files=mapping,
                 metadata={Path(p).name:list(values) for p, values in _snapshot(files).items()})
+            if data['schema']==retention.SCHEMA:
+                for path in files:
+                    with open(path,'r+b') as artifact:
+                        os.fsync(artifact.fileno())
+                file_journal._sync_dir(folder)
+                record['identities'] = {Path(path).name:list(file_journal.identity(Path(path))) for path in files}
+                retention.archive_identity(record)
+                if verifies_members:
+                    record['members_verified'] = True
+            if delivery_enabled:
+                record['delivery'] = delivery_manifest.archive_manifest(root,task,record,tool_id,cancel=force_cancel_check)
             stage = tr('写入断点')
             data['completed'][task.unit.unit_id] = record
             engine._write_checkpoint(root, data)
             records[task.unit.unit_id] = record
             available[task.unit.unit_id] = MaterializedUnit(files, True)
+            if cleanup is not None:
+                stage = tr('清理已归档文件')
+                cleanup.release(task.unit.unit_id)
             if on_progress:
                 on_progress(index+1, len(plan.tasks), task.unit.unit_id)
-        except engine.ForceCancelled:
+        except (engine.ForceCancelled,file_journal.Cancelled):
             return ExecutionResult('force_cancelled', available, records)
         except (OSError, ValueError, subprocess.CalledProcessError) as error:
             if isinstance(error,subprocess.CalledProcessError):
@@ -170,5 +214,10 @@ def execute_plan(plan, inputs, destination, bandizip='bz', cancel_check=None,
             message = tr('{0} 第 {1} 层「{2}」失败：{3}。断点：{4}', tool.name, task.layer_index+1, stage, reason, engine._checkpoint_path(root))
             print(message)
             return ExecutionResult('error',available,records,message)
-    # Keep the schema-2 state until resume/portable restore integration is complete.
     return ExecutionResult('completed', available, records)
+
+
+def _compress(tool,archive,paths,settings,volume,layer,force_cancel_check):
+    with tool.create_command(archive,paths,settings,volume) as command:
+        print(tr('{0} 第 {1} 层：{2}',tool.name,layer+1,engine._command_text(command)))
+        engine._run_proc(command,force_cancel_check)

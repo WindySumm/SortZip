@@ -102,7 +102,75 @@ def _archive_roundtrip(root, selected):
         extract(unfolded/record['entry'],recovered)
     if len(outer['files'])<2 or {path.name:path.read_bytes() for path in recovered.iterdir()}!=payloads:
         raise RuntimeError('外层分卷或逐层解包内容不一致')
-    return {'schema':before['schema'],'outer_volumes':len(outer['files']),'files_matched':len(payloads)}
+
+    source = root/'retention-source'
+    source.mkdir()
+    for name,payload in payloads.items():
+        (source/name).write_bytes(payload)
+    output = root/'retention-output'
+    stopped = False
+
+    def pause_after_cleanup(start,end,done,total,message):
+        nonlocal stopped
+        stopped = start==40 and done==2
+
+    layers = [Layer(2,archive_format,True,'4KB',password=password),
+              Layer(1,archive_format,password=password),
+              Layer(1,archive_format,True,'6KB',suffix='.data',password=password)]
+    task = dict(src=str(source),dest=str(output),custom_names={'.bin':'材料'},keep_files=True,
+                output_list=True,archive_tool=selected,compression_layers=layers,
+                retain_layers=[],restore_original_names=True,
+                delivery_manifest=True,delivery_original_names=True,
+                naming_rules=[dict(enable=True,match_folder='材料',template='工作文件 {n}{ext}')])
+    if engine.main_from_config(task,on_progress=pause_after_cleanup,cancel_check=lambda:stopped)!='safe_cancelled':
+        raise RuntimeError('三层任务安全取消失败')
+    checkpoint = engine._checkpoint_path(output)
+    partial = json.loads(checkpoint.read_bytes())
+    if len(partial['completed'])!=2 or not all(row.get('members_verified') for row in partial['completed'].values()):
+        raise RuntimeError('清理前成员校验记录缺失')
+    if engine.main_from_config(dict(resume_from=str(checkpoint),layer_passwords={2:password}))!='completed':
+        raise RuntimeError('三层任务恢复失败')
+    final = json.loads(checkpoint.read_bytes())
+    records = list(final['completed'].values())
+    if (any(step!='done' for step in final['cleanup'].values()) or
+            any((output/record['folder']/row['shown']).exists()
+                for record in records[:-1] for row in record['files']) or
+            any((output/'材料').glob('*.bin'))):
+        raise RuntimeError('三层任务清理结果不匹配')
+    outer = records[-1]
+    with (output/'材料/List.txt').open(encoding='utf-8',newline='') as stream:
+        rows = list(csv.DictReader(stream,delimiter='\t'))
+    if len(rows)!=len(payloads) or any(row['所属压缩包名']!=outer['folder']+'/'+outer['entry'] for row in rows):
+        raise RuntimeError('三层清单没有引用实际入口卷')
+    volumes = root/'retention-canonical'
+    shutil.copytree(output/outer['folder'],volumes)
+    for record in reversed(records):
+        if record is outer:
+            subprocess.run([str(powershell),'-NoProfile','-ExecutionPolicy','Bypass','-File',
+                            str(volumes/'Restore-Archive-Names/Restore-Names.ps1')],
+                           check=True,stdin=subprocess.DEVNULL,capture_output=True,timeout=30)
+            entry = volumes/rows[0]['标准入口卷名']
+        else:
+            entry = target/record['entry']
+        target = root/f"retention-extracted-{record['layer']}"
+        target.mkdir()
+        extract(entry,target)
+    subprocess.run([str(powershell),'-NoProfile','-ExecutionPolicy','Bypass','-File',
+                    str(target/'SortZip-Restore-Names.ps1')],
+                   check=True,stdin=subprocess.DEVNULL,capture_output=True,timeout=30)
+    if {name:(target/name).read_bytes() for name in payloads}!=payloads:
+        raise RuntimeError('三层解包和原名还原后内容不一致')
+    from sortzip_core.unpack import run as unpack
+    manifests = list(output.rglob('*.sortzip.json'))
+    destination = root/'automatic-unpack'
+    if len(manifests)!=1 or unpack(dict(dest=str(destination),unpack_manifests=manifests,
+                                      unpack_passwords=[password]),{})!='completed':
+        raise RuntimeError('自动解包失败')
+    restored = next(destination.glob('*/group-1-1-1'))
+    if {path.name:path.read_bytes() for path in restored.iterdir()}!=payloads:
+        raise RuntimeError('自动恢复原名后的内容不一致')
+    return {'schema':before['schema'],'outer_volumes':len(outer['files']),'files_matched':len(payloads),
+            'member_verified_layers':len(records),'retention_resume':'ok','automatic_unpack':'ok'}
 
 
 def run_smoke_test(report_path):

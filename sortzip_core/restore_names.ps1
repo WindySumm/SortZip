@@ -7,10 +7,14 @@ function SafeName($name) {
         $name.EndsWith('.') -or $name.EndsWith(' ') -or
         $name -match '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)') { throw 'Unsafe filename in manifest.' }
 }
-function Matches($path, $record) {
-    if (-not (Test-Path -LiteralPath $path)) { return $false }
+function RegularFile($path) {
     $item = Get-Item -LiteralPath $path -Force
     if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Not a regular file: $path" }
+    return $item
+}
+function Matches($path, $record) {
+    if (-not (Test-Path -LiteralPath $path)) { return $false }
+    $item = RegularFile $path
     if ($item.Length -ne $record.size) { return $false }
     $stream = [IO.File]::OpenRead($path)
     $algorithm = [Security.Cryptography.SHA256]::Create()
@@ -23,13 +27,17 @@ function SaveState($phase) {
     $temp = Join-Path $PSScriptRoot ('.restore-'+[Guid]::NewGuid().ToString('N')+'.tmp')
     $bytes = [Text.Encoding]::UTF8.GetBytes($text)
     $stream = [IO.File]::Open($temp, [IO.FileMode]::CreateNew)
-    try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) }
-    finally { $stream.Dispose() }
-    if ([IO.File]::Exists($statePath)) { [IO.File]::Replace($temp,$statePath,[NullString]::Value) }
-    else { [IO.File]::Move($temp,$statePath) }
+    try {
+        try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) }
+        finally { $stream.Dispose() }
+        if ([IO.File]::Exists($statePath)) { [IO.File]::Replace($temp,$statePath,[NullString]::Value) }
+        else { [IO.File]::Move($temp,$statePath) }
+    } finally { [IO.File]::Delete($temp) }
 }
+$lock = $null
 try {
     $manifestPath = Join-Path $PSScriptRoot 'Restore-Names.json'
+    $null = RegularFile $manifestPath
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $algorithm = [Security.Cryptography.SHA256]::Create()
     try { $manifestHash = [BitConverter]::ToString($algorithm.ComputeHash([IO.File]::ReadAllBytes($manifestPath))).Replace('-', '') }
@@ -49,13 +57,33 @@ try {
         if ($sources.Contains($name) -or $targets.Contains($name)) { throw 'Temporary name overlaps payload.' }
     }
     $statePath = Join-Path $PSScriptRoot 'Restore-State.json'
+    $lockPath = Join-Path $PSScriptRoot 'Restore-Names.lock'
+    if ($root -eq $PSScriptRoot) {
+        foreach ($name in @((Split-Path -Leaf $manifestPath),(Split-Path -Leaf $statePath),
+                            (Split-Path -Leaf $lockPath),$MyInvocation.MyCommand.Name,
+                            ([IO.Path]::GetFileNameWithoutExtension($MyInvocation.MyCommand.Name)+'.cmd'))) {
+            if ($sources.Contains($name) -or $targets.Contains($name) -or $temps.Contains($name)) {
+                throw "Mapping overlaps the restore files: $name"
+            }
+        }
+    }
+    if (Test-Path -LiteralPath $lockPath) { $null = RegularFile $lockPath }
+    try { $lock = [IO.File]::Open($lockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None) }
+    catch { throw "Could not lock this restore job. Close any other restore window and try again: $lockPath" }
     $phase = 'new'
     if (Test-Path -LiteralPath $statePath) {
-        $item = Get-Item -LiteralPath $statePath -Force
-        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Invalid state file.' }
+        $null = RegularFile $statePath
         $state = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($state.schema -ne 1 -or $state.job -ne $manifest.job -or $state.manifest -ne $manifestHash -or $state.phase -notin @('staging','committing','complete')) { throw 'State does not match this restore job.' }
         $phase = $state.phase
+    }
+    $unstaged = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    if ($phase -eq 'staging') {
+        foreach ($record in $manifest.files) {
+            if (-not (Test-Path -LiteralPath (Join-Path $root $record.temp))) {
+                [void]$unstaged.Add($record.from)
+            }
+        }
     }
     if ($phase -eq 'complete') {
         foreach ($record in $manifest.files) {
@@ -70,18 +98,22 @@ try {
         $temp = Join-Path $root $record.temp
         $target = Join-Path $root $record.to
         if ($phase -eq 'new') {
-            if ((Test-Path -LiteralPath $temp) -or -not (Matches $source $record)) { throw "Input missing, changed, or temporary name occupied: $($record.from)" }
-            if ((Test-Path -LiteralPath $target) -and -not $sources.Contains($record.to)) { throw "Target exists: $($record.to)" }
+            if (Test-Path -LiteralPath $temp) { throw "Temporary name already exists: $temp" }
+            if (-not (Matches $source $record)) { throw "Input missing or changed: $source" }
+            if ((Test-Path -LiteralPath $target) -and -not $sources.Contains($record.to)) { throw "Target already exists: $target" }
         } elseif ($record.from -ceq $record.to) {
             if (-not (Matches $source $record)) { throw "Unchanged file missing or modified: $($record.from)" }
         } elseif ($phase -eq 'staging') {
+            if ((Test-Path -LiteralPath $target) -and -not $unstaged.Contains($record.to)) { throw "Target already exists: $target" }
             if (Test-Path -LiteralPath $temp) {
-                if ((Test-Path -LiteralPath $source) -or -not (Matches $temp $record)) { throw 'Ambiguous staged input.' }
-            } elseif (-not (Matches $source $record)) { throw 'Staging input missing or changed.' }
+                if (Test-Path -LiteralPath $source) { throw "Both the input and temporary name exist: $source / $temp" }
+                if (-not (Matches $temp $record)) { throw "Staged file changed: $temp" }
+            } elseif (-not (Matches $source $record)) { throw "Input missing or changed: $source" }
         } else {
             if (Test-Path -LiteralPath $temp) {
-                if ((Test-Path -LiteralPath $target) -or -not (Matches $temp $record)) { throw 'Target occupied or staged file changed.' }
-            } elseif (-not (Matches $target $record)) { throw 'Committed input missing or changed.' }
+                if (Test-Path -LiteralPath $target) { throw "Target already exists: $target" }
+                if (-not (Matches $temp $record)) { throw "Staged file changed: $temp" }
+            } elseif (-not (Matches $target $record)) { throw "Restored file missing or changed: $target" }
         }
     }
     if ($phase -eq 'new') { SaveState 'staging'; $phase = 'staging' }
@@ -90,7 +122,7 @@ try {
             if ($record.from -ceq $record.to) { continue }
             $temp = Join-Path $root $record.temp
             if (-not (Test-Path -LiteralPath $temp)) {
-                Rename-Item -LiteralPath (Join-Path $root $record.from) -NewName $record.temp -ErrorAction Stop
+                [IO.File]::Move((Join-Path $root $record.from),$temp)
             }
         }
         SaveState 'committing'
@@ -98,10 +130,10 @@ try {
     foreach ($record in $manifest.files) {
         if ($record.from -ceq $record.to) { continue }
         $temp = Join-Path $root $record.temp
-        if (Test-Path -LiteralPath $temp) { Rename-Item -LiteralPath $temp -NewName $record.to -ErrorAction Stop }
+        if (Test-Path -LiteralPath $temp) { [IO.File]::Move($temp,(Join-Path $root $record.to)) }
     }
     foreach ($record in $manifest.files) {
-        if (-not (Matches (Join-Path $root $record.to) $record)) { throw 'Final identity check failed.' }
+        if (-not (Matches (Join-Path $root $record.to) $record)) { throw "Restored file missing or changed: $($record.to)" }
     }
     SaveState 'complete'
     Write-Host 'Names restored. No extraction was performed.'
@@ -110,4 +142,6 @@ try {
     Write-Host "Restore stopped: $($_.Exception.Message)"
     Write-Host 'Keep this folder and all temporary files. Resolve the reported issue and run again.'
     exit 1
+} finally {
+    if ($null -ne $lock) { $lock.Dispose() }
 }

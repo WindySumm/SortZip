@@ -17,6 +17,7 @@ class TaskController(QObject):
     idle = Signal()
     cancel_waiting = Signal()
     prepared = Signal(object)
+    unpack_password_requested = Signal(object)
 
     def __init__(self,parent=None,factory=None):
         super().__init__(parent)
@@ -116,6 +117,8 @@ class TaskController(QObject):
             self.worker.error.connect(lambda message:self._log(tr('[错误] ')+message+'\n'))
             self.worker.progress.connect(self.progress)
             self.worker.cancel_waiting.connect(self.cancel_waiting)
+            if 'unpack_manifests' in config:
+                self.worker.unpack_password_requested.connect(self.unpack_password_requested)
             self.thread.start()
             return True
         except Exception:

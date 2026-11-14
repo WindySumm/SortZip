@@ -45,6 +45,7 @@ class NestedPipelineTests(unittest.TestCase):
             self.assertEqual(engine.main_from_config(self.config,stats=stats),'completed')
         self.assertEqual((stats['files_moved'],stats['files_renamed'],stats['groups_success']), (4,4,7))
         self.assertEqual(stats['groups_pending'],0)
+        self.assertEqual(stats['file_lists'],1)
         with (self.dest/'doc/sub/List.txt').open(encoding='utf-8',newline='') as stream:
             rows = list(csv.DictReader(stream,delimiter='\t'))
         self.assertEqual(rows[0]['原文件名'],'sub/original_1.txt')
@@ -67,6 +68,7 @@ class NestedPipelineTests(unittest.TestCase):
         self.assertEqual(status,'completed')
         self.assertEqual(process.call_count,2)
         self.assertEqual((stats['groups_success'],stats['groups_total'],stats['groups_pending']),(7,7,0))
+        self.assertEqual(stats['file_lists'],1)
 
     def test_layer_error_and_existing_output_rejected_before_classification(self):
         invalid = dict(self.config,compression_layers=[dict(suffix='.png'),dict()])

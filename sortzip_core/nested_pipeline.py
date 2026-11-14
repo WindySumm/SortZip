@@ -55,6 +55,12 @@ def attach_plan(config, *, context=None):
     layers = prepare_layers(config)
     units = [Unit('source:'+entry['source_rel'], entry['folder'], (entry['source_rel'],)) for entry in entries]
     plan = plan_layers(units,layers,context=context,allow_rar=config.get('archive_tool')=='winrar')
+    if config.get('restore_original_names'):
+        from sortzip_core.restore_bundle import validate_payload
+        validate_payload(plan,entries,context=context)
+    if config.get('delivery_manifest'):
+        from sortzip_core.delivery_manifest import validate_plan
+        validate_plan(plan,entries,original=config.get('delivery_original_names',False),context=context)
     root = Path(config['dest']).resolve()
     file_paths = [(context.target(root/entry['folder']/entry['target_name']) if context else
         (root/entry['folder']/entry['target_name']).resolve()) for entry in entries]
@@ -130,7 +136,8 @@ def resume(config, stats, on_progress=None, cancel_check=None, force_cancel_chec
                 force_cancel_check, execute_plan, state)
 
 
-def _run(plan, available, root, config, stats, on_progress, cancel_check, force_cancel_check, executor, state=None):
+def _run(plan, available, root, config, stats, on_progress, cancel_check, force_cancel_check, executor, state=None,
+         *, cleanup=None):
     total = len(plan.tasks)
     initial = len(state['completed']) if state is not None else 0
     stats.update(groups=initial, groups_total=total, groups_success=initial,
@@ -140,10 +147,14 @@ def _run(plan, available, root, config, stats, on_progress, cancel_check, force_
         stats.update(groups=done, groups_success=done, groups_pending=count-done)
         if on_progress:
             on_progress(start, 100, done, count, tr('多层压缩：{0}/{1}', done, count))
+    options = {} if cleanup is None else {'cleanup':cleanup}
+    if on_progress:
+        options['on_space_warning'] = lambda done,count,warning:on_progress(
+            start,100,done,count,tr('磁盘空间估算警告：{0}',warning))
     result = executor(plan, available, root, bandizip=config.get('bandizip', 'bz'),
         cancel_check=cancel_check, force_cancel_check=force_cancel_check,
         on_progress=progress, _resume_state=state,
-        archive_tool=config.get('_archive_tool'),output_list=bool(config.get('output_list')))
+        archive_tool=config.get('_archive_tool'),output_list=bool(config.get('output_list')),**options)
     success = len(result.records)
     failed = int(result.status=='error' and success<total)
     stats.update(groups=success, groups_success=success, groups_failed=failed,
@@ -166,9 +177,17 @@ def _run(plan, available, root, config, stats, on_progress, cancel_check, force_
                 bundles[identity] = kit.relative_to(root).as_posix()
             state = json.loads(engine._checkpoint_path(root).read_text(encoding='utf-8'))
             state['restore_bundles'] = bundles
-            if state.get('schema') in (3,4) and state['output_list']:
+            if state.get('delivery_manifest'):
+                from sortzip_core.delivery_manifest import EXTENSION,write_new
+                for identity in plan.final_ids:
+                    record = result.records[identity]
+                    manifest = record['delivery']
+                    write_new(root/record['folder']/(manifest['stem']+EXTENSION),manifest)
+            if state.get('schema',0)>=3 and state['output_list']:
                 stage = tr('生成文件清单')
-                publish_lists(root,plan,result)
+                stats['file_lists'] = publish_lists(root,plan,result,state)
+            else:
+                stats['file_lists'] = 0
             stage = tr('写入断点')
             engine._write_checkpoint(root,state)
         except (OSError,ValueError) as error:
@@ -179,7 +198,7 @@ def _run(plan, available, root, config, stats, on_progress, cancel_check, force_
     return result.status
 
 
-def publish_lists(root,plan,result):
+def publish_lists(root,plan,result,state=None):
     """Publish exact outer entry paths after all units exist, including on retry."""
     outer = {}
     for identity in plan.final_ids:
@@ -190,6 +209,8 @@ def publish_lists(root,plan,result):
             outer[original] = relative, canonical, len(record['files'])
     contents = {}
     counts = {}
+    recorded_paths = {row['source_rel']:root/row['folder']/row['target_name']
+                      for row in (state or {}).get('file_plan',())}
     for task in plan.tasks:
         if task.layer_index!=0:
             break
@@ -200,15 +221,18 @@ def publish_lists(root,plan,result):
             contents[folder] = []
             counts[folder] = 0
         for source_id, original in zip(task.input_ids,task.unit.original_ids,strict=True):
-            source = Path(result.units[source_id].files[0])
+            source = recorded_paths.get(original)
+            if source is None:
+                source = Path(result.units[source_id].files[0])
             if source.parent.resolve()!=folder:
                 raise ValueError(tr('文件清单与分类位置不一致'))
             counts[folder] += 1
             contents[folder].append((counts[folder],original,source.name,*outer[original]))
-    write_lists(contents,('序号','原文件名','新文件名','所属压缩包名','标准入口卷名','归档文件数'))
+    return write_lists(contents,('序号','原文件名','新文件名','所属压缩包名','标准入口卷名','归档文件数'))
 
 
 def write_lists(contents,header):
+    """Return the number of published lists, including identical lists reused on resume."""
     for folder,rows in contents.items():
         stream = io.StringIO(newline='')
         writer = csv.writer(stream,delimiter='\t')
@@ -232,3 +256,4 @@ def write_lists(contents,header):
                 os.link(temporary,path)
         finally:
             temporary.unlink(missing_ok=True)
+    return len(contents)

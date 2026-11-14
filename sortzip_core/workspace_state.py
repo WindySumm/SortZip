@@ -20,14 +20,14 @@ class LayerDraft:
     key: str = field(default_factory=lambda:uuid4().hex)
     data: dict = field(default_factory=lambda:dict(group=2,format='zip',volume=False,size='100MB',
         template='{folder}_{n}',encrypt=False,password='',confirm='',verify=False,rename=False,
-        suffix='.png',expanded=False,show_password=False),repr=False)
+        suffix='.png',expanded=False,show_password=False,retain=False),repr=False)
 
 
 def draft_from_layer(layer,required=False):
     return LayerDraft(data=dict(group=layer.group_size,format=layer.archive_format,volume=layer.enable_volume,
         size=layer.volume or '',template=layer.name_template,encrypt=bool(layer.password),
         password=layer.password,confirm=layer.password,verify=layer.verify,rename=layer.suffix is not None,
-        suffix=layer.suffix or '.'+layer.archive_format,expanded=False,show_password=False))
+        suffix=layer.suffix or '.'+layer.archive_format,expanded=False,show_password=False,retain=False))
 
 
 @dataclass
@@ -67,6 +67,9 @@ class WorkspaceState:
     keep_hierarchy: bool = False
     keep_files: bool = False
     output_list: bool = False
+    restore_original_names: bool = False
+    delivery_manifest: bool = False
+    delivery_original_names: bool = False
     compression_enabled: bool = True
     sort_by: str = 'name'
     preview_order: dict = field(default_factory=dict)
@@ -130,7 +133,11 @@ class WorkspaceState:
             if strict and self.invalid_migration:
                 raise ValueError(tr('旧层配置迁移失败，请先调整压缩层后再执行'))
             values = self.layer_values(strict)
-            config.update(compression_layers=values,group_size=values[0].group_size,archive_format=values[0].archive_format)
+            retained = [index for index,draft in enumerate(self.layers[:-1]) if draft.data.get('retain')]
+            config.update(compression_layers=values,group_size=values[0].group_size,archive_format=values[0].archive_format,
+                          retain_layers=retained,restore_original_names=self.restore_original_names,
+                          delivery_manifest=self.delivery_manifest,
+                          delivery_original_names=self.delivery_manifest and self.delivery_original_names)
         return config
 
     def file_entries(self):
@@ -157,6 +164,8 @@ class WorkspaceState:
         settings.setValue('archive_tool_paths',json.dumps(self.archive_tool_paths,ensure_ascii=False))
         for key,value in dict(src=self.source,dest=self.destination,recursive=self.recursive,
                 keep_hierarchy=self.keep_hierarchy,keep_files=self.keep_files,output_list=self.output_list,
+                restore_original_names=self.restore_original_names,
+                delivery_manifest=self.delivery_manifest,delivery_original_names=self.delivery_original_names,
                 first_compress=self.compression_enabled,confirm_config=self.confirm_config,
                 dark_mode=self.dark_mode,sort_by=next((label for label,code in SORT_LABELS.items() if code==self.sort_by),'文件名(升序)'),
                 unified_layers=True,nested_enabled=True,workbench_profile=True,workspace_migration_invalid=self.invalid_migration).items():
@@ -200,6 +209,8 @@ def load_workspace(settings,saved_password=''):
         ('source','src','',str),('destination','dest','',str),('recursive','recursive',False,bool),
         ('keep_hierarchy','keep_hierarchy',False,bool),('keep_files','keep_files',False,bool),
         ('output_list','output_list',False,bool),('compression_enabled','first_compress',True,bool),
+        ('restore_original_names','restore_original_names',False,bool),
+        ('delivery_manifest','delivery_manifest',False,bool),('delivery_original_names','delivery_original_names',False,bool),
         ('confirm_config','confirm_config',True,bool),('dark_mode','dark_mode',False,bool)):
         setattr(state,field_name,settings.value(key,default,type=kind))
     sort = settings.value('sort_by','文件名(升序)')

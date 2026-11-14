@@ -1,3 +1,4 @@
+import csv
 import errno
 import json
 from pathlib import Path
@@ -58,6 +59,25 @@ class TaskRecoveryTests(unittest.TestCase):
         self.assertEqual(self.resume(),'completed')
         self.assert_swapped()
         self.assertEqual(self.resume(),'completed')
+
+    def test_file_list_is_optional_and_classification_columns_remain_compatible(self):
+        stats = {}
+        self.assertEqual(engine.main_from_config(dict(self.config,output_list=False),stats=stats),'completed')
+        self.assertEqual(stats['file_lists'],0)
+        self.assertFalse(list(self.output.rglob('List.txt')))
+        for name in ('中文 一.txt','中文 二.txt'):
+            (self.source/name).write_text(name,encoding='utf-8')
+        (self.source/'附注.md').write_text('note',encoding='utf-8')
+        self.config['dest'] = str(self.root/'with-list')
+        self.config['custom_names']['.md'] = '附注'
+        self.assertEqual(engine.main_from_config(self.config,stats=stats),'completed')
+        self.assertEqual(stats['file_lists'],2)
+        listing = Path(self.config['dest'])/'doc/List.txt'
+        with listing.open(encoding='utf-8',newline='') as stream:
+            records = list(csv.reader(stream,delimiter='\t'))
+        self.assertEqual(records[0],['序号','原文件名','新文件名'])
+        self.assertEqual({row[1] for row in records[1:]},{'中文 一.txt','中文 二.txt'})
+        self.assertIn('附注.md',(Path(self.config['dest'])/'附注/List.txt').read_text(encoding='utf-8'))
 
     def test_resume_reconciles_move_and_both_rename_steps_after_uncaught_interruption(self):
         original = file_journal.rename_new

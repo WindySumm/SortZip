@@ -258,6 +258,7 @@ class WorkbenchView(QWidget):
         final_layout.addWidget(self.summary)
         self.keep = StateCheckBox(tr('保留原始文件'))
         self.output_list = StateCheckBox(tr('输出文件对应清单'))
+        self.output_list.setToolTip(tr('在输出目录的各分类下写入 List.txt，记录原相对路径和新文件名。压缩任务还会记录最外层入口卷、标准卷名及归档文件数。'))
         final_layout.addWidget(self.keep)
         final_layout.addWidget(self.output_list)
         final_layout.addStretch()

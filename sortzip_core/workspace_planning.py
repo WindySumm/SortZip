@@ -13,6 +13,7 @@ from sortzip_core.nested_pipeline import attach_plan, preflight_tool
 from sortzip_core.config import prepare_config
 from sortzip_core.constants import is_task_artifact
 from sortzip_core.i18n import tr
+from sortzip_core import disk_space
 
 
 def build_workspace_preview(config,revision,cancelled=lambda:False,strict=False):
@@ -83,6 +84,7 @@ def _build_workspace_preview(config,revision,cancelled,strict):
             config = prepare_config(config,require_files=True,context=context)
             if '_nested_plan' in config and config.get('_check_archive_executable'):
                 preflight_tool(config)
+            config['_space_report'],config['_space_warning'] = disk_space.inspect(config,context=context)
             result.prepared = config
         elif config.get('compression_layers') is not None and config.get('first_compress'):
             attach_plan(config,context=context)
@@ -122,6 +124,8 @@ class ResumeInspection:
     encrypted_layers: tuple = ()
     unverified_layers: tuple = ()
     input_root: str = ''
+    space_report: str = ''
+    preserved_units: int = 0
     tool_config: dict = field(default_factory=dict,repr=False)
 
 
@@ -131,10 +135,12 @@ def inspect_resume(config,revision,cancelled=lambda:False,strict=False):
         header = json.loads(Path(result.path).read_text(encoding='utf-8'))
         if not isinstance(header,dict):
             raise ValueError(tr('断点结构无效'))
-        if header.get('schema')==4:
+        copies = []
+        if header.get('schema') in (4,5):
             from sortzip_core import file_journal, task_recovery
             state,operations = task_recovery.read_state(Path(result.path),state=header)
             root = Path(result.path).parent
+            recorded = {}
             if not file_journal.exists(root/file_journal.DATABASE) and not state['files_ready']:
                 result.input_root = state['input_root']
             else:
@@ -142,24 +148,43 @@ def inspect_resume(config,revision,cancelled=lambda:False,strict=False):
                     with file_journal.journal(root,state['job'],readonly=True) as db:
                         if task_recovery.input_needed(db,operations):
                             result.input_root = state['input_root']
+                        recorded = dict(db.execute('SELECT id,step FROM operations'))
                 except sqlite3.OperationalError as error:
                     if error.sqlite_errorcode!=sqlite3.SQLITE_READONLY_ROLLBACK:
                         raise
                     # A terminated SQLite transaction may need recovery by the locked writer.
                     if not state['files_ready']:
                         result.input_root = state['input_root']
+            if not state['files_ready']:
+                for item in operations:
+                    if cancelled():
+                        return None
+                    step = recorded.get(item.index)
+                    if step not in (None,'copy','move'):
+                        continue
+                    device,_ = disk_space.volume(item.target.parent)
+                    if step=='copy' or (step is None and (state['keep_files'] or item.source_id[0]!=device)):
+                        copies.append((item.target.parent,item.source_id[2]))
             if state['kind']=='file_task':
                 result.kind = 'file_task'
                 result.groups = state['file_plan']
                 result.completed = len(result.groups) if state['files_ready'] else 0
+                result.space_report = disk_space.resume_report(root,None,{},state,copies=copies)
                 return None if cancelled() else result
         if header.get('kind')=='multilayer':
             from sortzip_core.nested_resume import load_resume
             result.plan,result.available,state = load_resume(result.path,inspect_only=True)
             result.kind = 'multilayer'
+            result.config = {key:state[key] for key in ('keep_files','retain_layers','restore_original_names','output_list',
+                             'delivery_manifest','delivery_original_names')
+                             if key in state}
             total = len(result.plan.tasks)
             result.archive_tool = state['archive_tool']
             result.completed = len(state['completed'])
+            from sortzip_core import retention
+            if state['schema']==retention.SCHEMA:
+                result.preserved_units = len(retention.unverified_cleanup(result.plan,state))
+            result.space_report = disk_space.resume_report(Path(result.path).parent,result.plan,result.available,state,copies=copies)
             pending = {row['layer'] for row in state['tasks'] if row['settings']['password_required']
                        and row['unit_id'] not in state['completed']}
             result.encrypted_layers = tuple(sorted(pending))

@@ -168,11 +168,12 @@ class WorkbenchPolishMixin:
 
     def _polish_footer(self):
         restore = self._command('resume',tr('恢复任务'),self._import_resume)
+        unpack = self._command('unpack',tr('解包并恢复'),self._import_unpack)
         self.resume_btn = DropResumeButton(tr('任务'),self)
         self.resume_btn.resumeDropped.connect(self._start_resume)
         self.resume_btn.setObjectName('QuietAction')
         self.resume_btn.setAccessibleName(tr('任务菜单，可拖入断点恢复'))
-        menu = QMenu(self.resume_btn); menu.addActions([restore,self.review_btn]); self.resume_btn.setMenu(menu)
+        menu = QMenu(self.resume_btn); menu.addActions([restore,unpack,self.review_btn]); self.resume_btn.setMenu(menu)
         while self.footer.count(): self.footer.takeAt(0)
         self.progress_bar = QProgressBar(self)
         self.progress_bar.setRange(0,100)
@@ -203,7 +204,7 @@ class WorkbenchPolishMixin:
         self.copy_btn.setEnabled(not busy and layer)
         self.remove_btn.setEnabled(not busy and layer and len(self.state.layers)>1)
         self.layer_menu_btn.setEnabled(not busy and layer)
-        for key in ('settings','resume','refresh','browse_source','browse_destination','map_add','map_all','rule_add','common'):
+        for key in ('settings','resume','unpack','refresh','browse_source','browse_destination','map_add','map_all','rule_add','common'):
             self.commands[key].setEnabled(not busy)
         self.map_clear_btn.setEnabled(not busy and self.mapping_table.rowCount()>0)
         self.commands['map_remove'].setEnabled(not busy and self.mapping_table.currentRow()>=0)

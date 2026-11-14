@@ -168,6 +168,31 @@ class ArchiveTool:
             command.append(('-p:' if self.identifier=='bandizip' else '-p')+password)
         return [*command, str(archive)]
 
+    def list_command(self, archive, password):
+        if self.identifier=='bandizip':
+            return [self.executable,'l','-list:s','-consolemode:utf8',
+                    *(['-p:'+password] if password else []),str(archive)], 'utf-8-sig'
+        if self.identifier=='7zip':
+            return [self.executable,'l','-slt','-ba','-sccUTF-8',
+                    *(['-p'+password] if password else []),str(archive)], 'utf-8-sig'
+        return [self.executable,'lt','-v','-cfg-','-scfr','-p'+(password or '-'),str(archive)], 'utf-8-sig'
+
+    def extract_command(self, archive, folder, password, member=None):
+        if self.identifier=='bandizip':
+            command = [self.executable,'e','-y','-aos','-consolemode:utf8','-o:'+str(folder)]
+            if password:
+                command.append('-p:'+password)
+        elif self.identifier=='7zip':
+            command = [self.executable,'e','-y','-aos','-spd','-sccUTF-8','-o'+str(folder),'-p'+password]
+        else:
+            command = [self.executable,'e','-cfg-','-scfr','-y','-o-','-p'+(password or '-')]
+        command.append(str(archive))
+        if member:
+            command.append(member)
+        if self.identifier=='winrar':
+            command.append(str(folder)+os.sep)
+        return command
+
     def collect(self, archive, settings):
         from sortzip_core.engine import _first_artifacts
         files = list(archive.parent.iterdir())

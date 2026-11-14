@@ -145,10 +145,15 @@ def show_stats_dialog(parent, stats, dest_path=None, status="completed"):
         detail.setWordWrap(True)
         detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(detail)
-    for label, key in [(tr('分类文件'), "files_moved"),
+    rows = [(tr('分类文件'), "files_moved"),
                        (tr('重命名文件'), "files_renamed"),
                        (tr('成功组数'), "groups"), (tr('失败组数'), "groups_failed"),
-                       (tr('跳过组数'), "groups_skipped"), (tr('待处理组数'), "groups_pending")]:
+                       (tr('跳过组数'), "groups_skipped"), (tr('待处理组数'), "groups_pending")]
+    if stats.get('unpack_task'):
+        rows = [(tr('已解包交付清单'), 'groups')]
+    if status=='completed' and 'file_lists' in stats:
+        rows.append((tr('文件对应清单数'), 'file_lists'))
+    for label, key in rows:
         row = QHBoxLayout()
         lbl = QLabel(f"{label}:")
         val_text = str(stats.get(key, 0))

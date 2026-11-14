@@ -94,7 +94,7 @@ class SafetyTests(unittest.TestCase):
 
     def test_checkpoint_replace_failure_preserves_existing(self):
         engine._write_checkpoint(self.root, {'old': True})
-        with patch.object(Path, 'replace', side_effect=OSError('disk')), self.assertRaises(OSError):
+        with patch('sortzip_core.file_journal.replace_durable', side_effect=OSError('disk')), self.assertRaises(OSError):
             engine._write_checkpoint(self.root, {'new': True})
         self.assertEqual(self.checkpoint(), {'old': True})
 
