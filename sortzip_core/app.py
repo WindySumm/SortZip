@@ -1,8 +1,9 @@
 """SortZip GUI entry and update notification; the workbench owns production UI."""
 import sys
-from PySide6.QtCore import QThread,Signal
+from PySide6.QtCore import QSettings,QThread,Signal
 from PySide6.QtWidgets import QApplication
 from sortzip_core.workbench import WorkbenchWindow as MainWindow
+from sortzip_core.i18n import configure_language
 
 class UpdateChecker(QThread):
     check_done = Signal(str)
@@ -42,6 +43,8 @@ def main():
         from sortzip_core.smoke import run_smoke_test
         sys.exit(run_smoke_test(sys.argv[2]))
     app = QApplication(sys.argv)
-    win = MainWindow()
+    settings = QSettings('SortZip','SortZip')
+    configure_language(settings, app)
+    win = MainWindow(settings=settings)
     win.show()
     sys.exit(app.exec())

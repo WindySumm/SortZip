@@ -9,6 +9,7 @@ from sortzip_core.formats import LAYER_FORMATS as FORMATS
 from sortzip_core.constants import validate_win_folder_name
 from sortzip_core.layer_migration import migrate_legacy
 from sortzip_core.planning import StepError
+from sortzip_core.i18n import tr
 
 SORT_LABELS = {'文件名(升序)':'name','文件名(降序)':'name_desc','修改时间(旧→新)':'mtime',
     '修改时间(新→旧)':'mtime_desc','文件大小(小→大)':'size_asc','文件大小(大→小)':'size_desc','扩展名':'ext'}
@@ -83,14 +84,14 @@ class WorkspaceState:
             data = draft.data
             fmt = data['format']
             if fmt not in FORMATS:
-                raise StepError(f'layer:{index}',f'第 {index+1} 层压缩格式无效')
+                raise StepError(f'layer:{index}',tr('第 {0} 层压缩格式无效', index+1))
             cap = FORMATS[fmt]
             password = data['password'] if cap['password'] else ''
             if strict and password:
                 if len(password)<8:
-                    raise ValueError(f'第 {index+1} 层密码至少需要 8 位；清空密码表示本层不加密')
+                    raise ValueError(tr('第 {0} 层密码至少需要 8 位；清空密码表示本层不加密', index+1))
                 if password!=data['confirm']:
-                    raise ValueError(f'第 {index+1} 层两次密码不一致')
+                    raise ValueError(tr('第 {0} 层两次密码不一致', index+1))
             values.append(Layer(data['group'] if cap['multiple'] else 1,fmt,
                 data['volume'] and cap['volume'],data['size'].strip() or None,data['template'],
                 data['suffix'].strip() if index==len(self.layers)-1 and data['rename'] else None,
@@ -107,14 +108,14 @@ class WorkspaceState:
             ext,folder = ext.strip().lower(),folder.strip()
             if not (self.mapping_enabled[index] if index<len(self.mapping_enabled) else ext not in self.disabled_extensions):
                 continue
-            if ext=='[无后缀]':
+            if ext in ('[无后缀]', '[no extension]'):
                 ext = ''
             elif not ext.startswith('.') or len(ext)<2:
-                raise StepError('mapping','已启用的映射需要有效扩展名')
+                raise StepError('mapping',tr('已启用的映射需要有效扩展名'))
             if validate_win_folder_name(folder):
-                raise StepError('mapping',f'分类目录无效：{folder}')
+                raise StepError('mapping',tr('分类目录无效：{0}', folder))
             if ext in mappings:
-                raise StepError('mapping',f'扩展名重复：{ext}')
+                raise StepError('mapping',tr('扩展名重复：{0}', ext))
             mappings[ext] = folder
         rules = [dict(enable=self.rule_enabled[index] if index<len(self.rule_enabled) else True,
                       match_folder=folder.strip(),template=template.strip())
@@ -127,14 +128,14 @@ class WorkspaceState:
             archive_tool=self.archive_tool,archive_tool_paths=dict(self.archive_tool_paths))
         if self.compression_enabled:
             if strict and self.invalid_migration:
-                raise ValueError('旧层配置迁移失败，请先调整压缩层后再执行')
+                raise ValueError(tr('旧层配置迁移失败，请先调整压缩层后再执行'))
             values = self.layer_values(strict)
             config.update(compression_layers=values,group_size=values[0].group_size,archive_format=values[0].archive_format)
         return config
 
     def file_entries(self):
         if self.preview is None or self.preview.revision!=self.revision:
-            raise ValueError('预览正在更新，请稍候')
+            raise ValueError(tr('预览正在更新，请稍候'))
         if self.preview.file_error:
             raise ValueError(self.preview.file_error)
         return self.preview.entries
@@ -224,16 +225,16 @@ def load_workspace(settings,saved_password=''):
         if settings.value('workbench_profile',False,type=bool):
             rows = json.loads(settings.value('workspace_layers','[]'))
             if not isinstance(rows,list) or not rows:
-                raise ValueError('层草稿无效')
+                raise ValueError(tr('层草稿无效'))
             state.layers = []
             for row in rows:
                 data = draft_from_layer(Layer()).data
                 data.update({k:v for k,v in row['data'].items() if k in data and k not in ('password','confirm','show_password')})
                 for key,default in draft_from_layer(Layer()).data.items():
                     if type(data[key]) is not type(default):
-                        raise ValueError('层草稿字段类型无效')
+                        raise ValueError(tr('层草稿字段类型无效'))
                 if data['format'] not in FORMATS or type(data['group']) is not int or not 1<=data['group']<=9999:
-                    raise ValueError('层格式或数量无效')
+                    raise ValueError(tr('层格式或数量无效'))
                 state.layers.append(LayerDraft(data=data))
             state.preview_order = json.loads(settings.value('workspace_order','{}'))
             if not isinstance(state.preview_order,dict):
@@ -260,7 +261,7 @@ def load_workspace(settings,saved_password=''):
     except (ValueError,TypeError,KeyError,AttributeError):
         state.layers = [draft_from_layer(Layer())]
         state.invalid_migration = True
-        state.notices.append('旧层配置无效，请调整压缩层并确认后执行。')
+        state.notices.append(tr('旧层配置无效，请调整压缩层并确认后执行。'))
     # Old enable flags remain readable for profile compatibility; only current
     # session password text controls encryption under the blank-means-off UI.
     for draft in state.layers:

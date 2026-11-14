@@ -48,6 +48,8 @@
 
 ## 环境与安装
 
+界面语言在启动时取自 `ui_language` 偏好。跟随系统时按 Qt 提供的首选显示语言顺序匹配简体中文或英语，其他语言回退英语。翻译条目保存在 `sortzip_core/translations/en.json`，英文手册在 `sortzip_core/manual_en.py`。新增显示文案时使用 `tr()`，动态内容以编号占位符传入。保存的分类、命名规则和清单列名有自己的数据格式。
+
 ```text
 SortZip/
 ├─ sortzip_core/        应用源码和运行资源

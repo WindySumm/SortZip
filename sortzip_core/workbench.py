@@ -26,6 +26,7 @@ from sortzip_core.credentials import WindowsCredentialStore,load_password,save_p
 from sortzip_core.ui_controls import StateCheckBox,loading_controls
 from sortzip_core.widgets import (PasswordDialog,
     resource_path,show_styled_dialog,show_stats_dialog)
+from sortzip_core.i18n import LANGUAGE_KEY, LANGUAGE_CHOICES, language_preference, tr
 
 
 class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
@@ -49,14 +50,14 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         self.setWindowIcon(QIcon(resource_path('assets/sortzip.ico')))
         self.native_caption = NativeCaption(self,self._append_log)
         self.layout().setContentsMargins(16,0,16,12)
-        self.notice.setText('分类 → 原文件命名 → 逐层压缩。预览只读，确认执行后才处理真实文件。')
-        self.source_label.setText('输入目录')
-        self.destination_label.setText('输出目录')
+        self.notice.setText(tr('分类 → 原文件命名 → 逐层压缩。预览只读，确认执行后才处理真实文件。'))
+        self.source_label.setText(tr('输入目录'))
+        self.destination_label.setText(tr('输出目录'))
         self._build_paths()
         options = QHBoxLayout()
-        self.recursive_cb = StateCheckBox('包含子文件夹')
-        self.compression_cb = StateCheckBox('启用压缩')
-        self.refresh_btn = self._tool(self._command('refresh','刷新预览',self._refresh_requested,'refresh'))
+        self.recursive_cb = StateCheckBox(tr('包含子文件夹'))
+        self.compression_cb = StateCheckBox(tr('启用压缩'))
+        self.refresh_btn = self._tool(self._command('refresh',tr('刷新预览'),self._refresh_requested,'refresh'))
         options.addWidget(self.recursive_cb)
         options.addWidget(self.compression_cb)
         options.addStretch()
@@ -66,11 +67,11 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         self._build_naming_tools()
         self._configure_filename_preview()
         self.archive_tool_combo = QuietFocusComboBox()
-        self.archive_tool_combo.setAccessibleName('压缩工具')
+        self.archive_tool_combo.setAccessibleName(tr('压缩工具'))
         for identifier,name in TOOL_NAMES.items():
             self.archive_tool_combo.addItem(name,identifier)
         tool_field = QFormLayout()
-        tool_field.addRow('压缩工具',self.archive_tool_combo)
+        tool_field.addRow(tr('压缩工具'),self.archive_tool_combo)
         self.final_page.layout().insertLayout(0,tool_field)
         self.archive_tool_combo.currentIndexChanged.connect(self._archive_tool_changed)
         self.navigation.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -105,8 +106,8 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         self.structure_history = StructureHistory(self)
         menu = self.resume_btn.menu()
         menu.addSeparator()
-        self.commands['undo'] = self.structure_history.stack.createUndoAction(self,'撤销')
-        self.commands['redo'] = self.structure_history.stack.createRedoAction(self,'重做')
+        self.commands['undo'] = self.structure_history.stack.createUndoAction(self,tr('撤销'))
+        self.commands['redo'] = self.structure_history.stack.createRedoAction(self,tr('重做'))
         menu.addActions([self.commands['undo'],self.commands['redo']])
         self._sync_action_states()
         self._update_checker = UpdateChecker()
@@ -123,8 +124,8 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         for name in ('source','destination'):
             field = getattr(self,name)
             self.paths.removeWidget(field)
-            field.setPlaceholderText('选择或拖入文件夹')
-            field.setAccessibleName('输入目录' if name=='source' else '输出目录')
+            field.setPlaceholderText(tr('选择或拖入文件夹'))
+            field.setAccessibleName(tr('输入目录') if name=='source' else tr('输出目录'))
             container = QWidget()
             layout = QHBoxLayout(container)
             layout.setContentsMargins(0,0,0,0)
@@ -153,35 +154,36 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
             self.paths.addWidget(widget,row,column)
 
     def _build_mapping_tools(self):
-        self.mapping_table.setHorizontalHeaderLabels(['文件类型（勾选启用）','分类目录'])
+        self.mapping_table.setHorizontalHeaderLabels([tr('文件类型（勾选启用）'),tr('分类目录')])
         self.mapping_table.setItemDelegate(LiveRuleDelegate(self.mapping_table))
         self.mapping_table.rowsReordered.connect(self.change)
         self.preset_category = QuietFocusComboBox()
-        self.preset_category.addItems(EXT_CATEGORIES)
+        for name in EXT_CATEGORIES:
+            self.preset_category.addItem(tr(name),name)
         self.preset_panel = QWidget()
         self.preset_grid = QGridLayout(self.preset_panel)
         self.preset_grid.setContentsMargins(0,4,0,4)
         self.mapping_page.layout().insertWidget(1,self.preset_panel)
         self.preset_panel.hide()
-        self.preset_category.currentTextChanged.connect(self._build_pickers)
+        self.preset_category.currentIndexChanged.connect(self._build_pickers)
         self._pickers = {}
         self._map_all_pending = False
 
     def _build_naming_tools(self):
-        self.naming.table.setHorizontalHeaderLabels(['匹配目录（勾选启用）','文件名称模板'])
+        self.naming.table.setHorizontalHeaderLabels([tr('匹配目录（勾选启用）'),tr('文件名称模板')])
         self.naming.table.rowsReordered.connect(self.change)
         self.sort_combo = QuietFocusComboBox()
         for label,code in SORT_LABELS.items():
-            self.sort_combo.addItem(label,code)
-        self.keep_hierarchy_cb = StateCheckBox('保持原文件夹层级')
+            self.sort_combo.addItem(tr(label),code)
+        self.keep_hierarchy_cb = StateCheckBox(tr('保持原文件夹层级'))
         settings = QFormLayout()
-        settings.addRow('文件排序',self.sort_combo)
+        settings.addRow(tr('文件排序'),self.sort_combo)
         settings.addRow(self.keep_hierarchy_cb)
         self.naming.layout().insertLayout(0,settings)
         self.naming_preset = QuietFocusComboBox()
-        self.naming_preset.addItem('选择命名预设…',None)
+        self.naming_preset.addItem(tr('选择命名预设…'),None)
         for template,label in RENAME_PRESETS:
-            self.naming_preset.addItem(label+'  '+template,template)
+            self.naming_preset.addItem(tr(label)+'  '+template,template)
         self.naming.layout().insertWidget(2,self.naming_preset)
         self.naming_preset.activated.connect(self._apply_naming_preset)
         self.keep_hierarchy_cb.toggled.connect(self.change)
@@ -222,7 +224,7 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
                     table.setItem(index,1,QTableWidgetItem(right))
             self.naming.fit_table()
             self._dark = self.state.dark_mode
-            self.theme_btn.setText('浅色模式' if self._dark else '深色模式')
+            self.theme_btn.setText(tr('浅色模式') if self._dark else tr('深色模式'))
             self.apply_theme()
             self.rebuild_navigation()
         self._build_pickers()
@@ -255,7 +257,7 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
                 self._ensure_category_rules()
             if self.draft() is not None:
                 self.state.invalid_migration = False
-            self.preview_status.setText('配置已变化，正在更新预览…')
+            self.preview_status.setText(tr('配置已变化，正在更新预览…'))
         finally:
             self._capturing = False
         self._sync_pickers()
@@ -303,7 +305,7 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         if not self._initializing:
             self._sync_compression_ui()
 
-    @structural('添加压缩层')
+    @structural(tr('添加压缩层'))
     def add_layer(self):
         if self._task_busy() or not self.state.compression_enabled:
             return
@@ -311,12 +313,12 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         fmt = next(iter(TOOL_FORMATS[self.state.archive_tool]))
         self._append_draft(draft_from_layer(Layer(archive_format=fmt)))
 
-    @structural('复制压缩层')
+    @structural(tr('复制压缩层'))
     def copy_layer(self):
         if not self._task_busy() and self.state.compression_enabled:
             super().copy_layer()
 
-    @structural('删除压缩层')
+    @structural(tr('删除压缩层'))
     def remove_layer(self):
         if not self._task_busy() and self.state.compression_enabled:
             super().remove_layer()
@@ -337,7 +339,7 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         if self._map_all_pending:
             self._map_all_pending = False
             if result.file_error:
-                show_styled_dialog(self,'无法扫描类型',result.file_error,width=420,height=200)
+                show_styled_dialog(self,tr('无法扫描类型'),result.file_error,width=420,height=200)
             else:
                 self._apply_all_extensions(result.extensions)
 
@@ -355,17 +357,16 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         result = self.state.preview
         if result is None:
             return
-        self.notice.setText(f'已扫描 {result.total_files} 个文件，匹配 {len(result.entries)} 个。'+
-            ('存在未匹配类型，可使用“映射全部”。' if result.total_files>len(result.entries) else '预览只读，确认执行后才处理文件。'))
-        self.summary.setText(f'输出目录：{self.state.destination or "尚未选择"}\n\n'
-            f'匹配 {len(result.entries)} 个文件。'+(f'共 {len(self.state.layers)} 层，最外层 {len(result.plan.final_ids)} 个完整单元。' if self.state.compression_enabled else '未启用压缩，只执行分类、命名与可选清单。')+
-            '\n\n保留原始文件时分类仅复制；否则会移动原文件。当前多层流程仍保留中间产物和完成断点。')
+        self.notice.setText(tr('已扫描 {0} 个文件，匹配 {1} 个。', result.total_files, len(result.entries))+
+            (tr('存在未匹配类型，可使用“映射全部”。') if result.total_files>len(result.entries) else tr('预览只读，确认执行后才处理文件。')))
+        self.summary.setText(tr('输出目录：{0}\n\n匹配 {1} 个文件。', self.state.destination or tr('尚未选择'), len(result.entries))+(tr('共 {0} 层，最外层 {1} 个完整单元。', len(self.state.layers), len(result.plan.final_ids)) if self.state.compression_enabled else tr('未启用压缩，只执行分类、命名与可选清单。'))+
+            tr('\n\n保留原始文件时分类仅复制；否则会移动原文件。当前多层流程仍保留中间产物和完成断点。'))
         if not self.state.compression_enabled:
-            self.preview_status.setText('未启用压缩：只执行分类、命名和可选清单。'+(' '+result.file_error if result.file_error else ''))
+            self.preview_status.setText(tr('未启用压缩：只执行分类、命名和可选清单。')+(' '+result.file_error if result.file_error else ''))
             for index in range(self.navigation.count()):
                 item = self.navigation.item(index)
                 if item.data(NodeRole.LayerNumber) is not None:
-                    item.setData(NodeRole.Summary,'未启用压缩 · 配置已保留')
+                    item.setData(NodeRole.Summary,tr('未启用压缩 · 配置已保留'))
         if not self._task_busy():
             self._sync_compression_ui()
         self._sync_action_states()
@@ -377,9 +378,9 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         if not by_source and self.state.compression_enabled:
             return super().filename_rows(entries,plan)
         return ((entry['source'],entry['target'],entry['folder'],
-            ('归档计划待修正' if self.state.preview.archive_error else
-                by_source.get(entry['source'],{}).get('archive') or '归档计划待修正')
-            if self.state.compression_enabled else '不压缩') for entry in entries)
+            (tr('归档计划待修正') if self.state.preview.archive_error else
+                by_source.get(entry['source'],{}).get('archive') or tr('归档计划待修正'))
+            if self.state.compression_enabled else tr('不压缩')) for entry in entries)
 
     def filter_filenames(self,*args):
         super().filter_filenames(*args)
@@ -392,7 +393,7 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         self.filename_table.setDragEnabled(enabled)
         self.filename_table.setAcceptDrops(enabled)
 
-    @structural('调整原文件顺序')
+    @structural(tr('调整原文件顺序'))
     def _preview_reordered(self):
         if self._task_busy():
             return
@@ -409,7 +410,7 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         if not self._task_busy():
             self.preview_coordinator.invalidate()
             self.state.revision += 1
-            self.preview_status.setText('正在重新扫描文件…')
+            self.preview_status.setText(tr('正在重新扫描文件…'))
             self.refresh()
 
     def _sort_changed(self,*args):
@@ -428,7 +429,8 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
             self.naming.table.item(row,1).setText(template)
 
     def _browse_folder(self,field):
-        path = QFileDialog.getExistingDirectory(self,'选择文件夹',field.text())
+        path = QFileDialog.getExistingDirectory(self,tr('选择文件夹'),field.text(),
+            QFileDialog.Option.ShowDirsOnly|QFileDialog.Option.DontUseNativeDialog)
         if path:
             field.setText(path)
 
@@ -439,7 +441,7 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
                 if item.widget() is not self.preset_category:
                     item.widget().deleteLater()
         self._pickers = {}
-        for index,ext in enumerate(EXT_CATEGORIES.get(self.preset_category.currentText(),())):
+        for index,ext in enumerate(EXT_CATEGORIES.get(self.preset_category.currentData(),())):
             checkbox = StateCheckBox(ext)
             self._pickers[ext] = checkbox
             checkbox.toggled.connect(lambda checked,ext=ext:self._picker_toggled(ext,checked))
@@ -466,7 +468,7 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         if checked:
             self._insert_mapping(ext,self.preset_category.currentText())
 
-    @structural('添加分类映射')
+    @structural(tr('添加分类映射'))
     def _insert_mapping(self,ext,folder):
         self._loading = True
         row = self.mapping_table.rowCount()
@@ -483,12 +485,12 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
             self.mapping_table.setCurrentCell(row,0)
             self.mapping_table.editItem(self.mapping_table.item(row,0))
 
-    @structural('删除分类映射')
+    @structural(tr('删除分类映射'))
     def remove_mapping(self):
         if not self._task_busy():
             super().remove_mapping()
 
-    @structural('清空分类映射')
+    @structural(tr('清空分类映射'))
     def _clear_mappings(self):
         if not self._task_busy():
             self.mapping_table.setRowCount(0)
@@ -500,16 +502,17 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         self._map_all_pending = True
         self._refresh_requested()
 
-    @structural('映射全部文件类型')
+    @structural(tr('映射全部文件类型'))
     def _apply_all_extensions(self,extensions):
         existing = {self.mapping_table.item(row,0).text().strip().lower():row for row in range(self.mapping_table.rowCount())}
         self._loading = True
         for ext in extensions:
-            name = ext or '[无后缀]'
+            name = ext or next((key for key in ('[无后缀]', '[no extension]') if key in existing),
+                               tr('[无后缀]'))
             if name in existing:
                 self.mapping_table.item(existing[name],0).setCheckState(Qt.CheckState.Checked)
                 continue
-            folder = next((category for category,values in EXT_CATEGORIES.items() if ext in values),ext.lstrip('.') or '无后缀')
+            folder = next((tr(category) for category,values in EXT_CATEGORIES.items() if ext in values),ext.lstrip('.') or tr('无后缀'))
             row = self.mapping_table.rowCount()
             self.mapping_table.insertRow(row)
             self.mapping_table.setItem(row,0,self._checked_item(name,True))
@@ -535,25 +538,25 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         self.controller.execute(config,self.state.revision,self._confirm_config)
 
     def _summary_text(self,config,result):
-        lines = [f'输入目录：{config["src"]}',f'输出目录：{config["dest"]}',
-            f'匹配 {len(result.entries)} 个文件；未匹配 {result.total_files-len(result.entries)} 个文件。',
-            '原始文件：'+('保留（复制）' if config.get('keep_files') else '移动到输出目录'),
-            '目录层级：'+('保留' if config.get('keep_hierarchy') else '分类内平铺'),
-            '文件对应清单：'+('输出' if config.get('output_list') else '不输出')]
+        lines = [tr('输入目录：{0}', config["src"]),tr('输出目录：{0}', config["dest"]),
+            tr('匹配 {0} 个文件；未匹配 {1} 个文件。', len(result.entries), result.total_files-len(result.entries)),
+            tr('原始文件：')+(tr('保留（复制）') if config.get('keep_files') else tr('移动到输出目录')),
+            tr('目录层级：')+(tr('保留') if config.get('keep_hierarchy') else tr('分类内平铺')),
+            tr('文件对应清单：')+(tr('输出') if config.get('output_list') else tr('不输出'))]
         if config['first_compress']:
-            lines.append('压缩工具：'+TOOL_NAMES[config.get('archive_tool','bandizip')])
+            lines.append(tr('压缩工具：')+TOOL_NAMES[config.get('archive_tool','bandizip')])
             tool = config.get('_archive_tool')
             if tool:
-                lines.append('命令行程序：'+tool.executable)
+                lines.append(tr('命令行程序：')+tool.executable)
             for index,layer in enumerate(config['compression_layers']):
-                lines.append(f'第 {index+1} 层：{layer.archive_format.upper()} · 每包 {layer.group_size} '+
-                    ('文件' if index==0 else '完整单元')+f' · 模板 {layer.name_template}'+
-                    (' · 分卷 '+str(layer.volume) if layer.enable_volume else '')+
-                    (' · 已设置密码' if layer.password else '')+(' · 校验' if layer.verify else '')+
-                    (' · 后缀 '+layer.suffix if layer.suffix else ''))
-            lines.append(f'最外层 {len(result.plan.final_ids)} 个完整单元；分卷数量及压缩后大小执行后确定。')
+                lines.append(tr('第 {0} 层：{1} · 每包 {2} ', index+1, layer.archive_format.upper(), layer.group_size)+
+                    (tr('文件') if index==0 else tr('完整单元'))+tr(' · 模板 {0}', layer.name_template)+
+                    (tr(' · 分卷 ')+str(layer.volume) if layer.enable_volume else '')+
+                    (tr(' · 已设置密码') if layer.password else '')+(tr(' · 校验') if layer.verify else '')+
+                    (tr(' · 后缀 ')+layer.suffix if layer.suffix else ''))
+            lines.append(tr('最外层 {0} 个完整单元；分卷数量及压缩后大小执行后确定。', len(result.plan.final_ids)))
         else:
-            lines.append('未启用压缩。')
+            lines.append(tr('未启用压缩。'))
         return '\n'.join(lines)
 
     def review_summary(self):
@@ -562,16 +565,16 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
             config = self.state.to_config(True)
             text = self._summary_text(config,self.state.preview)
             if self.state.preview.archive_error:
-                text += '\n\n无法执行：'+self.state.preview.archive_error
+                text += tr('\n\n无法执行：')+self.state.preview.archive_error
         except ValueError as error:
             text = str(error)
-        QMessageBox.information(self,'参数摘要',text)
+        QMessageBox.information(self,tr('参数摘要'),text)
 
     def _confirm_config(self,result):
         if not self.state.confirm_config:
             return True
-        return QMessageBox.question(self,'确认执行',self._summary_text(result.prepared,result)+
-            '\n\n将按这份预检快照执行，是否开始？',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,
+        return QMessageBox.question(self,tr('确认执行'),self._summary_text(result.prepared,result)+
+            tr('\n\n将按这份预检快照执行，是否开始？'),QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)==QMessageBox.StandardButton.Yes
 
     @Slot(bool)
@@ -603,18 +606,18 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
 
     @Slot(str)
     def _task_error(self,message):
-        self._append_log('[错误] '+message+'\n')
+        self._append_log(tr('[错误] ')+message+'\n')
         self.log_toggle.setChecked(True)
         if not self._closing:
-            show_styled_dialog(self,'无法完成任务',message,width=480,height=260)
+            show_styled_dialog(self,tr('无法完成任务'),message,width=480,height=260)
 
     @Slot(object,str,str)
     def _task_finished(self,stats,status,destination):
         if self._cancel_dlg:
             self._cancel_dlg.reject()
         if status!='completed':
-            labels = dict(error='处理失败',partial='部分分组跳过，保留断点',safe_cancelled='已安全中断',force_cancelled='已强制中断')
-            self.progress_bar.setFormat(labels.get(status,'任务已停止')+' [%p%]')
+            labels = dict(error=tr('处理失败'),partial=tr('部分分组跳过，保留断点'),safe_cancelled=tr('已安全中断'),force_cancelled=tr('已强制中断'))
+            self.progress_bar.setFormat(labels.get(status,tr('任务已停止'))+' [%p%]')
         if status=='error':
             self.log_toggle.setChecked(True)
         self._save_settings()
@@ -649,12 +652,12 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
             return
         dialog = QDialog(self)
         self._cancel_dlg = dialog
-        dialog.setWindowTitle('等待安全中断')
+        dialog.setWindowTitle(tr('等待安全中断'))
         layout = QVBoxLayout(dialog)
-        label = QLabel('正在等待当前压缩或文件阶段完成并保存断点。\n强制中断会保留半成品，恢复时重试未完成组。')
+        label = QLabel(tr('正在等待当前压缩或文件阶段完成并保存断点。\n强制中断会保留半成品，恢复时重试未完成组。'))
         label.setWordWrap(True)
         layout.addWidget(label)
-        force = QPushButton('强制中断')
+        force = QPushButton(tr('强制中断'))
         force.clicked.connect(lambda:self.controller.cancel(force=True))
         force.clicked.connect(dialog.accept)
         layout.addWidget(force)
@@ -668,7 +671,8 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         dialog.deleteLater()
 
     def _import_resume(self):
-        path,_ = QFileDialog.getOpenFileName(self,'选择断点文件',self.destination.text(),'SortZip 断点 (*.json)')
+        path,_ = QFileDialog.getOpenFileName(self,tr('选择断点文件'),self.destination.text(),
+            tr('SortZip 断点 (*.json)'),options=QFileDialog.Option.DontUseNativeDialog)
         if path:
             self._start_resume(path)
 
@@ -684,11 +688,11 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         destination = str(Path(result.path).parent)
         approval = {}
         if result.input_root:
-            if not self._confirm_resume(f'恢复需要访问原输入目录：\n{result.input_root}\n请确认目录和文件属于这次任务。'):
+            if not self._confirm_resume(tr('恢复需要访问原输入目录：\n{0}\n请确认目录和文件属于这次任务。', result.input_root)):
                 return None
             approval['approved_input_root'] = result.input_root
         if result.kind=='file_task':
-            if not self._confirm_resume(f'分类与改名断点：{result.path}\n共 {len(result.groups)} 个文件，继续未完成的操作？'):
+            if not self._confirm_resume(tr('分类与改名断点：{0}\n共 {1} 个文件，继续未完成的操作？', result.path, len(result.groups))):
                 return None
             return dict(resume_from=result.path,dest=destination,**approval)
         tool = result.tool_config.get('_archive_tool')
@@ -696,60 +700,58 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         if result.kind=='multilayer':
             passwords = {}
             for level in result.encrypted_layers:
-                dialog = PasswordDialog(self,initial=self._saved_password,hint=f'请输入第 {level+1} 层原任务密码。密码仅保留在本次会话。')
+                dialog = PasswordDialog(self,initial=self._saved_password,hint=tr('请输入第 {0} 层原任务密码。密码仅保留在本次会话。', level+1))
                 if dialog.exec()!=QDialog.DialogCode.Accepted:
                     return None
                 passwords[level] = dialog.password()
                 if not passwords[level]:
-                    self._task_error(f'第 {level+1} 层需要原任务密码')
+                    self._task_error(tr('第 {0} 层需要原任务密码', level+1))
                     return None
             total,done = len(result.plan.tasks),result.completed
             unverified = ''
             if result.unverified_layers:
                 levels = '、'.join(str(index+1) for index in result.unverified_layers)
-                unverified = f'\n旧断点第 {levels} 层没有已完成归档可验证密码。请确认输入的是原密码。'
-            if not self._confirm_resume(f'多层断点：{result.path}\n压缩工具：{tool_label}\n共 {total} 组，已完成 {done} 组，待处理 {total-done} 组。\n'
-                    '复用已完成产物；未完成组写入新的重试目录。'+unverified):
+                unverified = tr('\n旧断点第 {0} 层没有已完成归档可验证密码。请确认输入的是原密码。', levels)
+            if not self._confirm_resume(tr('多层断点：{0}\n压缩工具：{1}\n共 {2} 组，已完成 {3} 组，待处理 {4} 组。\n复用已完成产物；未完成组写入新的重试目录。', result.path, tool_label, total, done, total-done)+unverified):
                 return None
             self._show_resume_plan(result,passwords)
             return dict(resume_from=result.path,layer_passwords=passwords,
                         dest=destination,**result.tool_config,**approval)
         total,done = len(result.groups),result.completed
         if done==total:
-            if QMessageBox.question(self,'任务已完成','所有分组均已完成。是否清除此断点文件？',
+            if QMessageBox.question(self,tr('任务已完成'),tr('所有分组均已完成。是否清除此断点文件？'),
                     QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)==QMessageBox.StandardButton.Yes:
                 Path(result.path).unlink()
             return None
-        if result.problems and not self._confirm_resume('文件检查发现以下问题：\n'+'\n'.join(result.problems)+'\n仍然继续恢复？'):
+        if result.problems and not self._confirm_resume(tr('文件检查发现以下问题：\n')+'\n'.join(result.problems)+tr('\n仍然继续恢复？')):
             return None
         cfg = result.config
         unverified = ''
         if result.unverified_layers:
             levels = '、'.join(str(index+1) for index in result.unverified_layers)
-            unverified = f'\n旧断点第 {levels} 层没有可用于验证的归档，请确认稍后输入的是原密码。'
-        if not self._confirm_resume(f'断点：{result.path}\n待处理 {total-done} / {total} 组。\n压缩工具：{tool_label}\n压缩格式：{cfg.get("archive_format","zip").upper()}\n'
-                '恢复以断点配置为准；当前编辑草稿不会用于恢复。'+unverified):
+            unverified = tr('\n旧断点第 {0} 层没有可用于验证的归档，请确认稍后输入的是原密码。', levels)
+        if not self._confirm_resume(tr('断点：{0}\n待处理 {1} / {2} 组。\n压缩工具：{3}\n压缩格式：{4}\n恢复以断点配置为准；当前编辑草稿不会用于恢复。', result.path, total-done, total, tool_label, cfg.get("archive_format","zip").upper())+unverified):
             return None
         password = ''
         if cfg.get('password'):
-            dialog = PasswordDialog(self,initial=self._saved_password,hint='输入原任务密码。')
+            dialog = PasswordDialog(self,initial=self._saved_password,hint=tr('输入原任务密码。'))
             if dialog.exec()!=QDialog.DialogCode.Accepted:
                 return None
             password = dialog.password()
             if not password:
-                self._task_error('请输入原任务密码')
+                self._task_error(tr('请输入原任务密码'))
                 return None
-        self.notice.setText('正在恢复旧版断点；编辑区显示原草稿，只读。实际执行以断点为准。')
+        self.notice.setText(tr('正在恢复旧版断点；编辑区显示原草稿，只读。实际执行以断点为准。'))
         return dict(resume_from=result.path,password=password,bandizip=tool.executable if tool else 'bandizip',
                     dest=destination,**result.tool_config)
 
     def _confirm_resume(self,text):
-        return QMessageBox.question(self,'确认恢复',text,QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,
+        return QMessageBox.question(self,tr('确认恢复'),text,QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)==QMessageBox.StandardButton.Yes
 
     def _show_resume_plan(self,result,passwords):
         # The checkpoint owns archive identities. Never regenerate it from UI node keys.
-        state = WorkspaceState(source='断点中的已分类文件',destination=str(Path(result.path).parent),
+        state = WorkspaceState(source=tr('断点中的已分类文件'),destination=str(Path(result.path).parent),
             keep_files=True,dark_mode=self.state.dark_mode,archive_tool=result.archive_tool)
         levels = max(task.layer_index for task in result.plan.tasks)+1
         state.layers = [draft_from_layer(replace(next(t.settings for t in result.plan.tasks if t.layer_index==index),
@@ -766,7 +768,7 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         self._resume_inspection = result
         self._populate_controls()
         self._render_preview()
-        self.notice.setText('恢复视图：按断点中的原始计划执行，配置只读；原编辑草稿将在任务结束后恢复。')
+        self.notice.setText(tr('恢复视图：按断点中的原始计划执行，配置只读；原编辑草稿将在任务结束后恢复。'))
         self._set_task_active(True)
 
     def toggle_theme(self):
@@ -779,9 +781,23 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         if self._task_busy():
             return
         dialog = QDialog(self)
-        dialog.setWindowTitle('SortZip 设置')
+        dialog.setWindowTitle(tr('SortZip 设置'))
         layout = QVBoxLayout(dialog)
-        confirm = StateCheckBox('开始前显示配置确认')
+        preference = language_preference(self.settings)
+        language = QuietFocusComboBox()
+        language.setObjectName('InterfaceLanguage')
+        for code,label in LANGUAGE_CHOICES:
+            language.addItem(label,code)
+        language.setCurrentIndex(language.findData(preference))
+        language_form = QFormLayout()
+        language_form.addRow(tr('界面语言'),language)
+        layout.addLayout(language_form)
+        restart_hint = QLabel(tr('重启 SortZip 后生效。'))
+        restart_hint.setWordWrap(True)
+        restart_hint.hide()
+        language.currentIndexChanged.connect(lambda:restart_hint.setVisible(language.currentData()!=preference))
+        layout.addWidget(restart_hint)
+        confirm = StateCheckBox(tr('开始前显示配置确认'))
         confirm.setChecked(self.state.confirm_config)
         layout.addWidget(confirm)
         paths = QFormLayout()
@@ -789,23 +805,24 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         for identifier,name in TOOL_NAMES.items():
             field = QLineEdit(self.state.archive_tool_paths.get(identifier,''))
             detected = detect_tool(identifier)
-            missing = '未检测到，请选择 bz.exe' if identifier=='bandizip' else '未检测到，请选择程序'
+            missing = tr('未检测到，请选择 bz.exe') if identifier=='bandizip' else tr('未检测到，请选择程序')
             field.setPlaceholderText(detected or missing)
             field.setToolTip(detected or missing)
-            browse = QPushButton('浏览')
+            browse = QPushButton(tr('浏览'))
             def choose(checked=False,edit=field,title=name):
-                selected,_ = QFileDialog.getOpenFileName(dialog,'选择 '+title+' 命令行程序',edit.text(),'程序 (*.exe)')
+                selected,_ = QFileDialog.getOpenFileName(dialog,tr('选择 {0} 命令行程序',title),edit.text(),
+                    tr('程序 (*.exe)'),options=QFileDialog.Option.DontUseNativeDialog)
                 if selected:
                     edit.setText(selected)
             browse.clicked.connect(choose)
-            verify = QPushButton('检测')
+            verify = QPushButton(tr('检测'))
             def probe(checked=False,edit=field,tool=identifier):
                 try:
                     path = check_tool(tool,{tool:edit.text().strip()})
                 except (ValueError,OSError) as error:
-                    show_styled_dialog(dialog,'压缩工具检测',str(error))
+                    show_styled_dialog(dialog,tr('压缩工具检测'),str(error))
                 else:
-                    show_styled_dialog(dialog,'压缩工具检测',f'检测通过\n{path}')
+                    show_styled_dialog(dialog,tr('压缩工具检测'),tr('检测通过\n{0}', path))
             verify.clicked.connect(probe)
             row = QHBoxLayout()
             row.addWidget(field,1)
@@ -814,16 +831,16 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
             paths.addRow(name,row)
             tool_fields[identifier] = field
         layout.addLayout(paths)
-        label = QLabel('各层密码仅保留在当前会话；关闭软件后需重新输入。')
+        label = QLabel(tr('各层密码仅保留在当前会话；关闭软件后需重新输入。'))
         label.setWordWrap(True)
         layout.addWidget(label)
-        clear_password = QPushButton('清除旧版保存的密码')
+        clear_password = QPushButton(tr('清除旧版保存的密码'))
         clear_password.clicked.connect(self._clear_saved_password)
         layout.addWidget(clear_password)
-        project = QPushButton('GitHub 项目主页')
+        project = QPushButton(tr('GitHub 项目主页'))
         project.clicked.connect(lambda:QDesktopServices.openUrl(QUrl('https://github.com/WindySumm/SortZip')))
         layout.addWidget(project)
-        reset = QPushButton('恢复默认设置')
+        reset = QPushButton(tr('恢复默认设置'))
         reset.clicked.connect(lambda:self._reset_settings(dialog))
         layout.addWidget(reset)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
@@ -831,6 +848,7 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
         if dialog.exec()==QDialog.DialogCode.Accepted:
+            self.settings.setValue(LANGUAGE_KEY,language.currentData())
             self.state.confirm_config = confirm.isChecked()
             self.state.archive_tool_paths = {identifier:field.text().strip() for identifier,field in tool_fields.items() if field.text().strip()}
             self._save_settings()
@@ -839,13 +857,15 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         if save_password(self.settings,self.credential_store,'',False,self._append_log):
             self.settings.setValue('remember_pwd',False)
             self._saved_password = ''
-            self._append_log('已清除旧版保存密码。各层会话密码未改动。\n')
+            self._append_log(tr('已清除旧版保存密码。各层会话密码未改动。\n'))
 
     def _reset_settings(self,dialog=None):
-        if not self._confirm_resume('恢复默认设置会清空当前配置和已保存偏好，是否继续？'):
+        if not self._confirm_resume(tr('恢复默认设置会清空当前配置和已保存偏好，是否继续？')):
             return
         self._clear_saved_password()
+        language = language_preference(self.settings)
         self.settings.clear()
+        self.settings.setValue(LANGUAGE_KEY,language)
         self.structure_history.stack.clear()
         self.state = WorkspaceState(revision=self.state.revision+1)
         self._populate_controls()
@@ -864,7 +884,7 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
     def _on_update_result(self,latest):
         from sortzip_core.app import _compare_versions
         if not self._closing and latest and _compare_versions(latest,__version__):
-            if self._confirm_resume(f'发现新版本 {latest}，是否打开发布页面？'):
+            if self._confirm_resume(tr('发现新版本 {0}，是否打开发布页面？', latest)):
                 QDesktopServices.openUrl(QUrl('https://github.com/WindySumm/SortZip/releases/latest'))
 
     def closeEvent(self,event):
@@ -874,7 +894,7 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         if self._task_busy():
             event.ignore()
             self.controller.cancel()
-            self._append_log('等待安全停止并释放线程后关闭。\n')
+            self._append_log(tr('等待安全停止并释放线程后关闭。\n'))
             return
         checker = getattr(self,'_update_checker',None)
         if self.preview_service.busy() or self.controller.planner.busy() or (checker is not None and checker.isRunning()):

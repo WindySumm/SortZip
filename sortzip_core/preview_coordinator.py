@@ -3,6 +3,7 @@ import json
 
 from sortzip_core.planning import StepError
 from sortzip_core.workspace_state import PreviewResult
+from sortzip_core.i18n import tr
 
 
 class PreviewCoordinator:
@@ -43,7 +44,7 @@ class PreviewCoordinator:
     def mark_pending(self):
         w = self.window
         w._preview_has_issue = True
-        w.preview_status.setText('正在更新预览…')
+        w.preview_status.setText(tr('正在更新预览…'))
         w.sync_preview_status()
         w.review_btn.setEnabled(False)
 

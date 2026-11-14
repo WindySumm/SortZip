@@ -1,11 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
+from PySide6.QtCore import QLibraryInfo
 
+qt_translations = Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath))
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets/sortzip.ico', 'assets'), ('sortzip_core/restore_names.ps1', 'sortzip_core')],
+    datas=[('assets/sortzip.ico', 'assets'), ('sortzip_core/restore_names.ps1', 'sortzip_core'),
+           ('sortzip_core/translations/en.json', 'sortzip_core/translations'),
+           (str(qt_translations / 'qtbase_zh_CN.qm'), 'PySide6/translations')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

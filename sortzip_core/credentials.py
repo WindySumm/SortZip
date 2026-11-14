@@ -4,6 +4,7 @@ API reference: https://learn.microsoft.com/windows/win32/api/wincred/ns-wincred-
 """
 import ctypes
 from ctypes import wintypes
+from sortzip_core.i18n import tr
 
 TARGET = 'SortZip/ArchivePassword'
 
@@ -51,7 +52,7 @@ class WindowsCredentialStore:
     def write(self, password):
         blob = password.encode('utf-16-le')
         if len(blob) > 2560:
-            raise ValueError('密码超过 Windows 凭据存储大小限制')
+            raise ValueError(tr('密码超过 Windows 凭据存储大小限制'))
         buffer = (ctypes.c_ubyte * len(blob)).from_buffer_copy(blob)
         cred = _Credential(Type=1, TargetName=self.target, CredentialBlobSize=len(blob),
                            CredentialBlob=buffer, Persist=2, UserName='SortZip')
@@ -78,7 +79,7 @@ def load_password(settings, store, warn):
             return legacy
         return store.read()
     except (OSError, ValueError, AttributeError):
-        warn('无法读取或迁移已保存密码。请重新输入；旧密码仅在迁移成功后清除。')
+        warn(tr('无法读取或迁移已保存密码。请重新输入；旧密码仅在迁移成功后清除。'))
         return ''
 
 
@@ -95,5 +96,5 @@ def save_password(settings, store, password, remember, warn):
         if not remember:
             settings.remove('password')
             settings.sync()
-        warn('密码保存或清除失败，本次设置未完全生效；当前任务可继续。请检查 Windows 凭据管理器。')
+        warn(tr('密码保存或清除失败，本次设置未完全生效；当前任务可继续。请检查 Windows 凭据管理器。'))
         return False

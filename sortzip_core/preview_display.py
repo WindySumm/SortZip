@@ -1,6 +1,7 @@
 """Batch filename preview rendering, preserving identity-based UI state."""
 from PySide6.QtCore import Qt,QSignalBlocker,QItemSelectionModel
 from PySide6.QtWidgets import QTableWidgetItem
+from sortzip_core.i18n import tr
 
 
 def render_filename_rows(view,rows):
@@ -34,7 +35,7 @@ def render_filename_rows(view,rows):
                 if values[0]==identity:
                     table.setCurrentItem(table.item(row,0),QItemSelectionModel.SelectionFlag.NoUpdate)
             view.category_filter.clear()
-            view.category_filter.addItem('全部分类',None)
+            view.category_filter.addItem(tr('全部分类'),None)
             for folder in sorted({row[2] for row in rows}):
                 view.category_filter.addItem(folder,folder)
             view.category_filter.setCurrentIndex(max(0,view.category_filter.findData(previous)))

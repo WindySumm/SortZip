@@ -10,6 +10,7 @@ from sortzip_core.nesting import Layer, plan_layers
 from sortzip_core.widgets import show_styled_dialog
 from sortzip_core.ui_controls import StateCheckBox, CompactFieldRow, StepSpinBox, PasswordVisibility
 from PySide6.QtGui import QFont
+from sortzip_core.i18n import tr
 
 
 class LayerRow(QGroupBox):
@@ -27,7 +28,7 @@ class LayerRow(QGroupBox):
         title_font.setPointSizeF(11)
         title_font.setWeight(QFont.Weight.DemiBold)
         self.layer_title.setFont(title_font)
-        self.outer_badge = QLabel('最外层')
+        self.outer_badge = QLabel(tr('最外层'))
         self.outer_badge.setObjectName('LayerBadge')
         self.header = QWidget()
         header_layout = QHBoxLayout(self.header)
@@ -44,26 +45,26 @@ class LayerRow(QGroupBox):
         self.tool_formats = FORMATS
         self.format.addItems(FORMATS if value.archive_format in FORMATS else LAYER_FORMATS)
         self.format.setCurrentText(value.archive_format)
-        self.volume = StateCheckBox('启用分卷')
+        self.volume = StateCheckBox(tr('启用分卷'))
         self.volume.setChecked(value.enable_volume)
         self.size = QLineEdit(value.volume or '')
-        self.size.setPlaceholderText('留空自动；如 100MB')
+        self.size.setPlaceholderText(tr('留空自动；如 100MB'))
         self.template = QLineEdit(value.name_template)
-        self.template.setToolTip('{original}：本层输入单元序号范围；{source_range}：原文件序号范围；{n}：本层组序号；{folder}：目录名')
+        self.template.setToolTip(tr('{original}：本层输入单元序号范围；{source_range}：原文件序号范围；{n}：本层组序号；{folder}：目录名'))
         self.password = QLineEdit(value.password)
         self.confirm = QLineEdit(value.password)
-        self.password.setPlaceholderText('密码留空即为不启用本层密码')
-        self.confirm.setPlaceholderText('再次输入密码')
+        self.password.setPlaceholderText(tr('密码留空即为不启用本层密码'))
+        self.confirm.setPlaceholderText(tr('再次输入密码'))
         for edit in (self.password,self.confirm):
             edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.show_password = PasswordVisibility((self.password,self.confirm),self)
-        self.verify = StateCheckBox('压缩后校验完整性')
+        self.verify = StateCheckBox(tr('压缩后校验完整性'))
         self.verify.setChecked(value.verify)
-        self.rename = StateCheckBox('修改最外层后缀')
+        self.rename = StateCheckBox(tr('修改最外层后缀'))
         self.rename.setChecked(value.suffix is not None)
         self.suffix = QLineEdit(value.suffix or '.'+value.archive_format)
-        self.group_label = QLabel('每包单元数')
-        self.format_label = QLabel('压缩格式')
+        self.group_label = QLabel(tr('每包单元数'))
+        self.format_label = QLabel(tr('压缩格式'))
         self.basic_fields = CompactFieldRow(self.group_label,self.group,self.format_label,self.format)
         form.addRow(self.basic_fields)
         volume_row = QHBoxLayout()
@@ -71,23 +72,23 @@ class LayerRow(QGroupBox):
         volume_row.addWidget(self.size)
         form.addRow(volume_row)
         form.addRow(self.verify)
-        self.advanced_toggle = QPushButton('命名与密码 ▸')
+        self.advanced_toggle = QPushButton(tr('命名与密码 ▸'))
         self.advanced_toggle.setCheckable(True)
         self.advanced = QWidget()
         self.advanced.setObjectName('LayerAdvanced')
         advanced_form = QFormLayout(self.advanced)
         advanced_form.setContentsMargins(0,0,0,0)
-        for label,widget in [('归档名称模板',self.template),('密码',self.password),
-                ('确认密码',self.confirm)]:
+        for label,widget in [(tr('归档名称模板'),self.template),(tr('密码'),self.password),
+                (tr('确认密码'),self.confirm)]:
             if inline_template or widget is not self.template:
                 advanced_form.addRow(label,widget)
-        self.apply_password_btn = QPushButton('将密码应用到后续层')
+        self.apply_password_btn = QPushButton(tr('将密码应用到后续层'))
         self.apply_password_btn.clicked.connect(self.apply_password)
         self.apply_password_btn.hide()
         advanced_form.addRow(self.apply_password_btn)
         self.advanced.setVisible(False)
         self.advanced_toggle.toggled.connect(self.advanced.setVisible)
-        self.advanced_toggle.toggled.connect(lambda checked:self.advanced_toggle.setText('命名与密码 ▾' if checked else '命名与密码 ▸'))
+        self.advanced_toggle.toggled.connect(lambda checked:self.advanced_toggle.setText(tr('命名与密码 ▾') if checked else tr('命名与密码 ▸')))
         form.addRow(self.advanced_toggle)
         form.addRow(self.advanced)
         suffix_row = QHBoxLayout()
@@ -95,8 +96,8 @@ class LayerRow(QGroupBox):
         suffix_row.addWidget(self.suffix)
         form.addRow(suffix_row)
         if actions:
-            self.copy_btn = QPushButton('复制本层')
-            self.remove_btn = QPushButton('删除本层')
+            self.copy_btn = QPushButton(tr('复制本层'))
+            self.remove_btn = QPushButton(tr('删除本层'))
             row = QHBoxLayout()
             row.addWidget(self.copy_btn)
             row.addWidget(self.remove_btn)
@@ -116,12 +117,12 @@ class LayerRow(QGroupBox):
 
     def set_layer_position(self,index,outer):
         self.outer = outer
-        title = f'第 {index+1} 层'
+        title = tr('第 {0} 层', index+1)
         self.setTitle('')
-        self.setAccessibleName(title+('，最外层' if outer else ''))
+        self.setAccessibleName(title+(tr('，最外层') if outer else ''))
         self.layer_title.setText(title)
         self.outer_badge.setVisible(outer)
-        self.group_label.setText('每包文件数' if index==0 else '每包单元数')
+        self.group_label.setText(tr('每包文件数') if index==0 else tr('每包单元数'))
         self.basic_fields.refresh_metrics()
         self.sync()
 
@@ -142,9 +143,9 @@ class LayerRow(QGroupBox):
             self._single_locked = False
             self.group.setValue(self._group_preference)
         self.group.setEnabled(capability['multiple'])
-        self.group.setToolTip('' if capability['multiple'] else '每包固定为 1 单元，且该单元只能有 1 个实体文件')
+        self.group.setToolTip('' if capability['multiple'] else tr('每包固定为 1 单元，且该单元只能有 1 个实体文件'))
         self.rename.setEnabled(self.outer)
-        self.rename.setToolTip('' if self.outer else '中间层保留真实后缀和分卷结构')
+        self.rename.setToolTip('' if self.outer else tr('中间层保留真实后缀和分卷结构'))
         self.suffix.setEnabled(self.outer and self.rename.isChecked())
 
     def set_tool_formats(self,formats,current):
@@ -164,9 +165,9 @@ class LayerRow(QGroupBox):
         encrypted = capability['password'] and bool(self.password.text())
         password = self.password.text() if encrypted else ''
         if validate_confirmation and encrypted and len(password)<8:
-            raise ValueError('密码至少需要 8 位；清空密码表示本层不加密')
+            raise ValueError(tr('密码至少需要 8 位；清空密码表示本层不加密'))
         if validate_confirmation and encrypted and password!=self.confirm.text():
-            raise ValueError('两次输入的压缩密码不一致')
+            raise ValueError(tr('两次输入的压缩密码不一致'))
         return Layer(self.group.value() if capability['multiple'] else 1,
             self.format.currentText(), self.volume.isChecked() and capability['volume'],
             self.size.text().strip() or None, self.template.text(),
@@ -186,7 +187,7 @@ class LayerStack(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(4,4,4,4)
         self.layout.setSpacing(14)
-        self.add_btn = QPushButton('＋ 添加一层压缩')
+        self.add_btn = QPushButton(tr('＋ 添加一层压缩'))
         self.add_btn.setObjectName('AddLayerButton')
         self.add_btn.clicked.connect(lambda:self.add_layer(Layer()))
         self.layout.addWidget(self.add_btn)
@@ -228,8 +229,8 @@ class LayerStack(QWidget):
         valid = (FORMATS[source.format.currentText()]['password']
                  and len(source.password.text())>=8 and source.password.text()==source.confirm.text())
         source.apply_password_btn.setEnabled(bool(valid and targets))
-        source.apply_password_btn.setToolTip('应用到当前已有的 ZIP/7Z 后续层，自动启用密码；跳过不支持密码的格式。'
-            if valid and targets else '请先输入第一层两次一致的至少 8 位密码，且添加支持密码的后续层。')
+        source.apply_password_btn.setToolTip(tr('应用到当前已有的 ZIP/7Z 后续层，自动启用密码；跳过不支持密码的格式。')
+            if valid and targets else tr('请先输入第一层两次一致的至少 8 位密码，且添加支持密码的后续层。'))
 
     def apply_first_password(self):
         self._sync_password_action()
@@ -240,8 +241,8 @@ class LayerStack(QWidget):
         targets = [row for row in self.rows[1:] if FORMATS[row.format.currentText()]['password']]
         conflicts = [str(self.rows.index(row)+1) for row in targets
                      if any(text and text!=password for text in (row.password.text(),row.confirm.text()))]
-        if conflicts and QMessageBox.question(self,'覆盖后续层密码',
-                '第 '+ '、'.join(conflicts)+' 层已填写不同密码，是否替换为第一层密码？',
+        if conflicts and QMessageBox.question(self,tr('覆盖后续层密码'),
+                tr('第 {0} 层已填写不同密码，是否替换为第一层密码？', ', '.join(conflicts)),
                 QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:
             return
@@ -271,7 +272,7 @@ class LayerStack(QWidget):
         try:
             self.add_layer(row.value())
         except ValueError as error:
-            show_styled_dialog(self,'层参数无效',str(error))
+            show_styled_dialog(self,tr('层参数无效'),str(error))
 
     def remove_layer(self,row):
         if len(self.rows)<=1:
@@ -290,7 +291,7 @@ class LayerStack(QWidget):
         for index,row in enumerate(self.rows):
             row.set_layer_position(index,index==len(self.rows)-1)
             row.group.setPrefix('')
-            row.group.setToolTip('每包原始文件数' if index==0 else '每包上一层完整单元数，分卷不会拆散')
+            row.group.setToolTip(tr('每包原始文件数') if index==0 else tr('每包上一层完整单元数，分卷不会拆散'))
             row.remove_btn.setEnabled(len(self.rows)>1)
             if not row.outer:
                 row.rename.setChecked(False)
@@ -334,10 +335,10 @@ class LayerStack(QWidget):
 class LayerEditor(QDialog):
     def __init__(self, layers, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('多层压缩配置')
+        self.setWindowTitle(tr('多层压缩配置'))
         self.resize(580,660)
         layout = QVBoxLayout(self)
-        label = QLabel('每层按上一层完整单元分组，整套分卷始终一起处理。\n仅最外层可修改后缀；各层密码只保留在本次窗口会话中。')
+        label = QLabel(tr('每层按上一层完整单元分组，整套分卷始终一起处理。\n仅最外层可修改后缀；各层密码只保留在本次窗口会话中。'))
         label.setWordWrap(True)
         layout.addWidget(label)
         scroll = QScrollArea()
@@ -351,13 +352,13 @@ class LayerEditor(QDialog):
         for layer in layers:
             self.add_layer(layer)
         controls = QHBoxLayout()
-        add = QPushButton('添加一层')
+        add = QPushButton(tr('添加一层'))
         add.clicked.connect(lambda:self.add_layer(Layer()))
         controls.addWidget(add)
         controls.addStretch()
-        cancel = QPushButton('取消')
+        cancel = QPushButton(tr('取消'))
         cancel.clicked.connect(self.reject)
-        save = QPushButton('应用')
+        save = QPushButton(tr('应用'))
         save.clicked.connect(self.save)
         controls.addWidget(cancel)
         controls.addWidget(save)
@@ -375,7 +376,7 @@ class LayerEditor(QDialog):
         try:
             value = row.value()
         except ValueError as error:
-            show_styled_dialog(self,'层参数无效',str(error))
+            show_styled_dialog(self,tr('层参数无效'),str(error))
             return
         self.add_layer(value)
 
@@ -398,7 +399,7 @@ class LayerEditor(QDialog):
             values = tuple(row.value() for row in self.rows)
             plan_layers((),values)
         except ValueError as error:
-            show_styled_dialog(self,'层参数无效',str(error))
+            show_styled_dialog(self,tr('层参数无效'),str(error))
             return
         self.layers = values
         self.accept()

@@ -11,6 +11,8 @@ from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from sortzip_core.config import validate_password
 from sortzip_core.tasks import Worker, LogStream  # backward-compatible imports
 from sortzip_core.manual_content import MANUAL_TEXT
+from sortzip_core.i18n import current_language, tr
+from sortzip_core.manual_en import MANUAL_TEXT_EN
 
 
 def resource_path(relative_path):
@@ -28,12 +30,12 @@ class PasswordDialog(QDialog):
 
     def __init__(self, parent=None, initial="", hint=""):
         super().__init__(parent)
-        self.setWindowTitle("输入压缩密码")
+        self.setWindowTitle(tr('输入压缩密码'))
         self.setFixedSize(340, 230)
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
-        title_lbl = QLabel("输入压缩密码")
+        title_lbl = QLabel(tr('输入压缩密码'))
         title_lbl.setStyleSheet("font-size: 14px; font-weight: bold;")
         title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_lbl)
@@ -49,11 +51,11 @@ class PasswordDialog(QDialog):
 
         self.password_edit = QLineEdit(initial)
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_edit.setPlaceholderText("留空表示无密码")
+        self.password_edit.setPlaceholderText(tr('留空表示无密码'))
         self.confirm_edit = QLineEdit(initial)
         self.confirm_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.confirm_edit.setPlaceholderText("再次输入压缩密码")
-        self.pwd_toggle_btn = QPushButton("显示")
+        self.confirm_edit.setPlaceholderText(tr('再次输入压缩密码'))
+        self.pwd_toggle_btn = QPushButton(tr('显示'))
         self.pwd_toggle_btn.setFixedWidth(40)
         self.pwd_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.pwd_toggle_btn.clicked.connect(self._toggle_password)
@@ -61,15 +63,15 @@ class PasswordDialog(QDialog):
         confirm_row.addWidget(self.confirm_edit)
         confirm_row.addWidget(self.pwd_toggle_btn)
 
-        form.addRow("压缩密码:", self.password_edit)
-        form.addRow("确认密码:", confirm_row)
+        form.addRow(tr('压缩密码:'), self.password_edit)
+        form.addRow(tr('确认密码:'), confirm_row)
         layout.addLayout(form)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        cancel_btn = QPushButton("取消")
+        cancel_btn = QPushButton(tr('取消'))
         cancel_btn.clicked.connect(self.reject)
-        ok_btn = QPushButton("确定")
+        ok_btn = QPushButton(tr('确定'))
         ok_btn.setStyleSheet("background: #0078d4; color: white; padding: 4px 16px;")
         ok_btn.clicked.connect(self._on_ok)
         btn_row.addWidget(cancel_btn)
@@ -80,11 +82,11 @@ class PasswordDialog(QDialog):
         if self.password_edit.echoMode() == QLineEdit.EchoMode.Password:
             self.password_edit.setEchoMode(QLineEdit.EchoMode.Normal)
             self.confirm_edit.setEchoMode(QLineEdit.EchoMode.Normal)
-            self.pwd_toggle_btn.setText("隐藏")
+            self.pwd_toggle_btn.setText(tr('隐藏'))
         else:
             self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
             self.confirm_edit.setEchoMode(QLineEdit.EchoMode.Password)
-            self.pwd_toggle_btn.setText("显示")
+            self.pwd_toggle_btn.setText(tr('显示'))
 
     def _on_ok(self):
         err = validate_password(self.password_edit.text(), self.confirm_edit.text())
@@ -113,7 +115,7 @@ def show_styled_dialog(parent, title, message, width=300, height=160):
     msg_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     layout.addWidget(msg_lbl)
     layout.addStretch()
-    btn = QPushButton("确定")
+    btn = QPushButton(tr('确定'))
     btn.clicked.connect(dlg.accept)
     layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
     dlg.exec()
@@ -121,18 +123,18 @@ def show_styled_dialog(parent, title, message, width=300, height=160):
 
 def show_stats_dialog(parent, stats, dest_path=None, status="completed"):
     dlg = QDialog(parent)
-    dlg.setWindowTitle("统计报告")
+    dlg.setWindowTitle(tr('统计报告'))
     dlg.setMinimumSize(340, 300)
     layout = QVBoxLayout(dlg)
     layout.setSpacing(10)
     titles = {
-        "completed": "处理成功完成",
-        "safe_cancelled": "已安全中断",
-        "force_cancelled": "已强制中断",
-        "error": "处理中断（异常）",
-        "partial": "部分分组跳过（可恢复）",
+        "completed": tr('处理成功完成'),
+        "safe_cancelled": tr('已安全中断'),
+        "force_cancelled": tr('已强制中断'),
+        "error": tr('处理中断（异常）'),
+        "partial": tr('部分分组跳过（可恢复）'),
     }
-    title = QLabel(titles.get(status, "处理完成"))
+    title = QLabel(titles.get(status, tr('处理完成')))
     title.setStyleSheet("font-size: 14px; font-weight: bold;")
     title.setAlignment(Qt.AlignmentFlag.AlignCenter)
     layout.addWidget(title)
@@ -143,10 +145,10 @@ def show_stats_dialog(parent, stats, dest_path=None, status="completed"):
         detail.setWordWrap(True)
         detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(detail)
-    for label, key in [("分类文件", "files_moved"),
-                       ("重命名文件", "files_renamed"),
-                       ("成功组数", "groups"), ("失败组数", "groups_failed"),
-                       ("跳过组数", "groups_skipped"), ("待处理组数", "groups_pending")]:
+    for label, key in [(tr('分类文件'), "files_moved"),
+                       (tr('重命名文件'), "files_renamed"),
+                       (tr('成功组数'), "groups"), (tr('失败组数'), "groups_failed"),
+                       (tr('跳过组数'), "groups_skipped"), (tr('待处理组数'), "groups_pending")]:
         row = QHBoxLayout()
         lbl = QLabel(f"{label}:")
         val_text = str(stats.get(key, 0))
@@ -162,10 +164,10 @@ def show_stats_dialog(parent, stats, dest_path=None, status="completed"):
     layout.addStretch()
     btn_layout = QHBoxLayout()
     if dest_path:
-        open_btn = QPushButton("打开输出文件夹")
+        open_btn = QPushButton(tr('打开输出文件夹'))
         open_btn.clicked.connect(lambda: os.startfile(dest_path))
         btn_layout.addWidget(open_btn)
-    ok_btn = QPushButton("确定")
+    ok_btn = QPushButton(tr('确定'))
     ok_btn.clicked.connect(dlg.accept)
     btn_layout.addWidget(ok_btn)
     layout.addLayout(btn_layout)
@@ -174,14 +176,14 @@ def show_stats_dialog(parent, stats, dest_path=None, status="completed"):
 
 def show_manual_dialog(parent):
     dlg = QDialog(parent)
-    dlg.setWindowTitle("使用手册")
+    dlg.setWindowTitle(tr('使用手册'))
     dlg.resize(520, 460)
     layout = QVBoxLayout(dlg)
     browser = QTextBrowser()
     browser.setOpenExternalLinks(False)
-    browser.setHtml(MANUAL_TEXT)
+    browser.setHtml(MANUAL_TEXT_EN if current_language() == 'en' else MANUAL_TEXT)
     layout.addWidget(browser)
-    btn = QPushButton("关闭")
+    btn = QPushButton(tr('关闭'))
     btn.clicked.connect(dlg.accept)
     layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
     dlg.exec()
@@ -189,11 +191,8 @@ def show_manual_dialog(parent):
 
 def show_conflict_dialog(parent, folder_name, template, conflicts):
     lines = "\n".join(f"  · {orig} → {name}" for _, orig, name in conflicts)
-    msg = (f"文件夹「{folder_name}」中\n"
-           f"模板 \"{template}\" 产生以下命名冲突：\n\n"
-           f"{lines}\n\n"
-           f"请调整命名模板")
-    show_styled_dialog(parent, "命名冲突", msg, width=380, height=220)
+    msg = (tr('文件夹「{0}」中\n模板 "{1}" 产生以下命名冲突：\n\n{2}\n\n请调整命名模板', folder_name, template, lines))
+    show_styled_dialog(parent, tr('命名冲突'), msg, width=380, height=220)
 
 
 class ReorderableTable(QTableWidget):

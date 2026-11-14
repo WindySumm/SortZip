@@ -113,6 +113,7 @@ def run_smoke_test(report_path):
     import time
     from PySide6.QtWidgets import QApplication
     from sortzip_core.app import MainWindow
+    from sortzip_core.i18n import LANGUAGE_KEY,configure_language,current_language,tr
     from sortzip_core import __version__
     from sortzip_core.planning import build_execution_plan
     from sortzip_core.widgets import resource_path
@@ -133,8 +134,14 @@ def run_smoke_test(report_path):
             settings.clear()
             settings.sync()
             report['legacy_preferences'] = 'ok'
+            requested_language = os.environ.get('SORTZIP_SMOKE_LANGUAGE','zh')
+            settings.setValue(LANGUAGE_KEY,requested_language)
+            configure_language(settings,application)
+            report['language'] = current_language()
             window = MainWindow(settings=settings, credential_store=_MemoryCredentials(), check_updates=False)
             try:
+                if window.run_btn.text()!=tr('开始执行') or (requested_language=='en' and window.run_btn.text()!='Start task'):
+                    raise RuntimeError('Could not load the requested interface language')
                 if window.pages.count() != 4 or window.windowIcon().isNull():
                     raise RuntimeError('窗口页面或图标加载失败')
                 if not Path(resource_path('assets/sortzip.ico')).is_file():
@@ -203,7 +210,7 @@ def run_smoke_test(report_path):
                         try:
                             main_from_config(task)
                         except ValueError as error:
-                            if '找不到 Bandizip' not in str(error):
+                            if str(error)!=tr('找不到 Bandizip 命令行程序 bz.exe。请在设置中选择 Bandizip 安装目录下的 bz.exe。'):
                                 raise
                         else:
                             raise RuntimeError('缺少工具时任务未被阻止')

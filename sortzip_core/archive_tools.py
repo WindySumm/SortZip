@@ -10,6 +10,7 @@ import tempfile
 
 from sortzip_core.formats import FORMATS, RAR_FORMAT
 from sortzip_core.planning import StepError
+from sortzip_core.i18n import tr
 
 
 TOOL_NAMES = {'bandizip': 'Bandizip', '7zip': '7-Zip', 'winrar': 'WinRAR'}
@@ -21,7 +22,7 @@ TOOL_FORMATS = {'bandizip':FORMATS,'7zip':{fmt:FORMATS[fmt] for fmt in ('zip','7
 def detect_tool(tool, preferred=''):
     """Resolve a locally configured executable. Never resolve a path from a checkpoint."""
     if tool not in TOOL_NAMES:
-        raise ValueError('未知的压缩工具')
+        raise ValueError(tr('未知的压缩工具'))
     if preferred:
         candidate = Path(preferred)
         if tool=='bandizip':
@@ -68,8 +69,8 @@ def resolve_tool(tool, paths=None, legacy_bandizip=None):
     executable = detect_tool(tool, preferred)
     if not executable:
         if tool=='bandizip':
-            raise ValueError('找不到 Bandizip 命令行程序 bz.exe。请在设置中选择 Bandizip 安装目录下的 bz.exe。')
-        raise ValueError(f'找不到 {TOOL_NAMES[tool]} 命令行程序。请在设置中选择有效的程序路径。')
+            raise ValueError(tr('找不到 Bandizip 命令行程序 bz.exe。请在设置中选择 Bandizip 安装目录下的 bz.exe。'))
+        raise ValueError(tr('找不到 {0} 命令行程序。请在设置中选择有效的程序路径。', TOOL_NAMES[tool]))
     return executable
 
 
@@ -80,12 +81,12 @@ def check_tool(tool, paths=None, legacy_bandizip=None):
         result = subprocess.run([executable, *probe], stdin=subprocess.DEVNULL, capture_output=True,
                                 timeout=8, creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     except (OSError, subprocess.TimeoutExpired) as error:
-        raise ValueError(f'{TOOL_NAMES[tool]} 无法启动或未在 8 秒内响应：{executable}') from error
+        raise ValueError(tr('{0} 无法启动或未在 8 秒内响应：{1}', TOOL_NAMES[tool], executable)) from error
     banner = (result.stdout+result.stderr).lower()
     if ((tool=='bandizip' and (b'bandizip' not in banner or b'<command>' not in banner)) or
             (tool=='7zip' and (result.returncode!=0 or b'7-zip' not in banner)) or
             (tool=='winrar' and not re.search(rb'(?m)^rar [5-9]\.\d+',banner))):
-        raise ValueError(f'所选程序未通过 {TOOL_NAMES[tool]} 命令行检测：{executable}')
+        raise ValueError(tr('所选程序未通过 {0} 命令行检测：{1}', TOOL_NAMES[tool], executable))
     return executable
 
 
@@ -99,26 +100,26 @@ def executable_identity(executable):
     def identity(info):
         return (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns)
     if identity(before)!=identity(after) or path.resolve()!=path:
-        raise ValueError(f'压缩程序在检测期间发生变化：{path}')
+        raise ValueError(tr('压缩程序在检测期间发生变化：{0}', path))
     return (*identity(after),digest)
 
 
 def validate_tool_layers(tool, layers):
     if tool not in TOOL_FORMATS:
-        raise ValueError('未知的压缩工具')
+        raise ValueError(tr('未知的压缩工具'))
     for index, layer in enumerate(layers):
         caps = TOOL_FORMATS[tool].get(layer.archive_format)
-        prefix = f'第 {index+1} 层：{TOOL_NAMES[tool]} '
+        prefix = tr('第 {0} 层：{1} ', index+1, TOOL_NAMES[tool])
         if caps is None:
-            raise StepError(f'layer:{index}', prefix+f'不能创建 {layer.archive_format.upper()}，请更改格式或压缩工具')
+            raise StepError(f'layer:{index}', prefix+tr('不能创建 {0}，请更改格式或压缩工具', layer.archive_format.upper()))
         if layer.enable_volume and not caps['volume']:
-            raise StepError(f'layer:{index}', prefix+f'未开放 {layer.archive_format.upper()} 分卷，请关闭分卷或更改格式')
+            raise StepError(f'layer:{index}', prefix+tr('未开放 {0} 分卷，请关闭分卷或更改格式', layer.archive_format.upper()))
         if layer.password and not caps['password']:
-            raise StepError(f'layer:{index}', prefix+'不支持当前格式的密码，请调整格式或密码')
+            raise StepError(f'layer:{index}', prefix+tr('不支持当前格式的密码，请调整格式或密码'))
         if tool!='bandizip' and '"' in layer.password:
-            raise StepError(f'layer:{index}', prefix+'的命令行无法可靠传递双引号密码，请更换密码')
+            raise StepError(f'layer:{index}', prefix+tr('的命令行无法可靠传递双引号密码，请更换密码'))
         if tool=='7zip' and layer.archive_format=='zip' and any(not 32<=ord(char)<=126 for char in layer.password):
-            raise StepError(f'layer:{index}', prefix+'创建 ZIP 时只接受可打印 ASCII 密码，请使用英文字母、数字或符号')
+            raise StepError(f'layer:{index}', prefix+tr('创建 ZIP 时只接受可打印 ASCII 密码，请使用英文字母、数字或符号'))
 
 
 @dataclass(frozen=True)
@@ -171,7 +172,7 @@ class ArchiveTool:
         from sortzip_core.engine import _first_artifacts
         files = list(archive.parent.iterdir())
         if any(not file.is_file() or file.is_symlink() for file in files):
-            raise ValueError('压缩产物目录含有无效文件')
+            raise ValueError(tr('压缩产物目录含有无效文件'))
         if not settings.enable_volume:
             expected = [archive]
         elif self.identifier=='bandizip':
@@ -181,7 +182,7 @@ class ArchiveTool:
         else:
             expected = files
         if set(files)!=set(expected):
-            raise ValueError('压缩产物缺失、存在额外文件或分卷不连续')
+            raise ValueError(tr('压缩产物缺失、存在额外文件或分卷不连续'))
         entry = entry_name(self.identifier,archive.stem,settings,{file.name for file in expected})
         return sorted(expected),archive.parent/entry
 
@@ -193,7 +194,7 @@ def entry_name(tool,stem,settings,names):
     if names=={base}:
         return base
     if not settings.enable_volume:
-        raise ValueError('分卷未启用或缺少归档入口')
+        raise ValueError(tr('分卷未启用或缺少归档入口'))
     if tool=='winrar':
         pattern = r'\.part(\d+)\.rar'
     elif tool=='bandizip' and fmt=='zip' and base in names:
@@ -206,10 +207,10 @@ def entry_name(tool,stem,settings,names):
             continue
         match = re.fullmatch(re.escape(stem)+pattern,name)
         if match is None or int(match[1]) in indexed:
-            raise ValueError('存在无效或重复分卷')
+            raise ValueError(tr('存在无效或重复分卷'))
         indexed[int(match[1])] = name
     if not indexed or sorted(indexed)!=list(range(1,len(indexed)+1)):
-        raise ValueError('缺少入口卷或分卷不连续')
+        raise ValueError(tr('缺少入口卷或分卷不连续'))
     return base if base in names else indexed[1]
 
 

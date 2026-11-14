@@ -8,6 +8,7 @@ from sortzip_core import engine
 from sortzip_core.constants import validate_win_folder_name
 from sortzip_core.nesting import MaterializedUnit, resolve_inputs
 from sortzip_core.archive_tools import ArchiveTool, resolve_tool, shown_name, validate_tool_layers
+from sortzip_core.i18n import tr
 
 
 @dataclass
@@ -37,11 +38,11 @@ def _snapshot(paths):
     for path in paths:
         path = Path(path)
         if not path.is_file() or path.is_symlink():
-            raise ValueError('输入文件缺失或为符号链接')
+            raise ValueError(tr('输入文件缺失或为符号链接'))
         info = path.stat()
         key = str(path.resolve())
         if key.casefold() in seen:
-            raise ValueError('输入文件路径重复')
+            raise ValueError(tr('输入文件路径重复'))
         seen.add(key.casefold())
         result[key] = (info.st_size, info.st_mtime_ns)
     return result
@@ -61,7 +62,7 @@ def execute_plan(plan, inputs, destination, bandizip='bz', cancel_check=None,
     tool_id = _resume_state.get('archive_tool','bandizip') if _resume_state is not None else (
         archive_tool.identifier if archive_tool else 'bandizip')
     if archive_tool and archive_tool.identifier!=tool_id:
-        raise ValueError('恢复必须使用断点记录的压缩工具')
+        raise ValueError(tr('恢复必须使用断点记录的压缩工具'))
     if _resume_state is not None and len(_resume_state['completed'])==len(plan.tasks):
         records = dict(_resume_state['completed'])
         return ExecutionResult('completed',dict(inputs),records)
@@ -69,23 +70,23 @@ def execute_plan(plan, inputs, destination, bandizip='bz', cancel_check=None,
     layers = {task.layer_index:task.settings for task in plan.tasks}
     validate_tool_layers(tool_id,(layers[index] for index in sorted(layers)))
     if _resume_state is None and engine._checkpoint_path(root).exists():
-        raise ValueError('输出已有恢复任务，不能覆盖')
+        raise ValueError(tr('输出已有恢复任务，不能覆盖'))
     available = dict(inputs)
     records = dict(_resume_state['completed']) if _resume_state is not None else {}
     folders, planned_paths = {}, set()
     for task in plan.tasks:
         if validate_win_folder_name(task.archive_stem) or type(task.layer_index) is not int or task.layer_index < 0:
-            raise ValueError('无效的层计划')
+            raise ValueError(tr('无效的层计划'))
         folder = root/f'layer-{task.layer_index+1}'/task.unit.folder/task.archive_stem
         if not folder.resolve().is_relative_to(root) or folder.is_symlink():
-            raise ValueError('压缩输出目录越界或已占用')
+            raise ValueError(tr('压缩输出目录越界或已占用'))
         key = str(folder.resolve()).casefold()
         if key in planned_paths:
-            raise ValueError('压缩输出目录重复')
+            raise ValueError(tr('压缩输出目录重复'))
         planned_paths.add(key)
         if folder.exists():
             if _resume_state is None:
-                raise ValueError('压缩输出目录已占用')
+                raise ValueError(tr('压缩输出目录已占用'))
             folder = folder.with_name(folder.name+'.retry-'+uuid.uuid4().hex)
         folders[task.unit.unit_id] = folder
     root.mkdir(parents=True, exist_ok=True)
@@ -93,7 +94,7 @@ def execute_plan(plan, inputs, destination, bandizip='bz', cancel_check=None,
         sources = {}
         for identity, unit in inputs.items():
             if unit.complete is not True:
-                raise ValueError('初始输入单元未完整完成')
+                raise ValueError(tr('初始输入单元未完整完成'))
             sources[identity] = {path:list(values) for path, values in _snapshot(unit.files).items()}
         data = dict(schema=3, kind='multilayer', archive_tool=tool_id, output_list=output_list,
                     tasks=task_specs(plan), sources=sources, completed={}, final_ids=list(plan.final_ids))
@@ -106,41 +107,41 @@ def execute_plan(plan, inputs, destination, bandizip='bz', cancel_check=None,
         if engine._check_cancel(cancel_check):
             return ExecutionResult(engine._cancel_status(force_cancel_check), available, records)
         folder = folders[task.unit.unit_id]
-        stage = '检查输入'
+        stage = tr('检查输入')
         try:
             paths = resolve_inputs(task, available)
             before = _snapshot(paths)
             # Flatten only after grouping full units; refuse ambiguous archive member names.
             names = [Path(path).name.casefold() for path in paths]
             if len(names) != len(set(names)):
-                raise ValueError('输入归档成员同名，不能无损打包')
+                raise ValueError(tr('输入归档成员同名，不能无损打包'))
             folder.mkdir(parents=True)
             settings = task.settings
             canonical = folder/(task.archive_stem+'.'+settings.archive_format)
             volume = (settings.volume or engine.get_auto_volume(sum(v[0] for v in before.values()))) if settings.enable_volume else None
-            stage = '创建归档'
+            stage = tr('创建归档')
             with tool.create_command(canonical,list(before),settings,volume) as command:
-                print(f'{tool.name} 第 {task.layer_index+1} 层：{engine._command_text(command)}')
+                print(tr('{0} 第 {1} 层：{2}', tool.name, task.layer_index+1, engine._command_text(command)))
                 engine._run_proc(command,force_cancel_check)
-            stage = '检查归档及分卷'
+            stage = tr('检查归档及分卷')
             artifacts,entry = tool.collect(canonical,settings)
             if settings.verify or (tool_id!='bandizip' and entry!=canonical):
-                stage = '完整性校验'
+                stage = tr('完整性校验')
                 engine._run_proc(tool.test_command(entry,settings.password),force_cancel_check)
-            stage = '复核输入'
+            stage = tr('复核输入')
             if _snapshot(paths) != before:
-                raise ValueError('压缩期间输入文件发生变化')
-            stage = '发布产物名称'
+                raise ValueError(tr('压缩期间输入文件发生变化'))
+            stage = tr('发布产物名称')
             mapping = [dict(canonical=artifact.name,shown=shown_name(artifact.name,task.archive_stem,
                 settings.archive_format,settings.suffix)) for artifact in artifacts]
             if len({item['shown'].casefold() for item in mapping}) != len(mapping):
-                raise ValueError('后缀修改生成重复产物名称')
+                raise ValueError(tr('后缀修改生成重复产物名称'))
             source_names = {a.name.casefold() for a in artifacts}
             for item in mapping:
                 if item['shown'] != item['canonical']:
                     target = folder/item['shown']
                     if validate_win_folder_name(item['shown']) or target.exists() or target.is_symlink() or item['shown'].casefold() in source_names:
-                        raise ValueError('后缀修改目标无效或占用')
+                        raise ValueError(tr('后缀修改目标无效或占用'))
             for item in mapping:
                 if item['shown'] != item['canonical']:
                     (folder/item['canonical']).rename(folder/item['shown'])
@@ -150,7 +151,7 @@ def execute_plan(plan, inputs, destination, bandizip='bz', cancel_check=None,
                 original_ids=list(task.unit.original_ids), format=settings.archive_format,
                 folder=folder.relative_to(root).as_posix(), entry=entry_name, files=mapping,
                 metadata={Path(p).name:list(values) for p, values in _snapshot(files).items()})
-            stage = '写入断点'
+            stage = tr('写入断点')
             data['completed'][task.unit.unit_id] = record
             engine._write_checkpoint(root, data)
             records[task.unit.unit_id] = record
@@ -161,12 +162,12 @@ def execute_plan(plan, inputs, destination, bandizip='bz', cancel_check=None,
             return ExecutionResult('force_cancelled', available, records)
         except (OSError, ValueError, subprocess.CalledProcessError) as error:
             if isinstance(error,subprocess.CalledProcessError):
-                reason = f'命令退出码 {error.returncode}'
+                reason = tr('命令退出码 {0}', error.returncode)
             elif isinstance(error,FileNotFoundError):
-                reason = '程序或文件缺失'
+                reason = tr('程序或文件缺失')
             else:
                 reason = engine.redact(error,task.settings.password)
-            message = f'{tool.name} 第 {task.layer_index+1} 层「{stage}」失败：{reason}。断点：{engine._checkpoint_path(root)}'
+            message = tr('{0} 第 {1} 层「{2}」失败：{3}。断点：{4}', tool.name, task.layer_index+1, stage, reason, engine._checkpoint_path(root))
             print(message)
             return ExecutionResult('error',available,records,message)
     # Keep the schema-2 state until resume/portable restore integration is complete.

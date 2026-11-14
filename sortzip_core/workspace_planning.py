@@ -12,6 +12,7 @@ from sortzip_core.planning_context import PlanningContext,PlanningCancelled
 from sortzip_core.nested_pipeline import attach_plan, preflight_tool
 from sortzip_core.config import prepare_config
 from sortzip_core.constants import is_task_artifact
+from sortzip_core.i18n import tr
 
 
 def build_workspace_preview(config,revision,cancelled=lambda:False,strict=False):
@@ -30,7 +31,7 @@ def _build_workspace_preview(config,revision,cancelled,strict):
     try:
         root = Path(config['src']).resolve()
         if not config['src'] or not root.is_dir():
-            raise ValueError('请选择有效的输入文件夹')
+            raise ValueError(tr('请选择有效的输入文件夹'))
         if not config['dest'] and not strict:
             config['dest'] = str(root.parent/'SortZip_Preview_Output')
         destination = Path(config['dest']).resolve() if config['dest'] else None
@@ -129,7 +130,7 @@ def inspect_resume(config,revision,cancelled=lambda:False,strict=False):
     try:
         header = json.loads(Path(result.path).read_text(encoding='utf-8'))
         if not isinstance(header,dict):
-            raise ValueError('断点结构无效')
+            raise ValueError(tr('断点结构无效'))
         if header.get('schema')==4:
             from sortzip_core import file_journal, task_recovery
             state,operations = task_recovery.read_state(Path(result.path),state=header)
@@ -172,7 +173,7 @@ def inspect_resume(config,revision,cancelled=lambda:False,strict=False):
             result.config = data['config']
             result.groups = data['groups']
             if not result.groups:
-                raise ValueError('断点没有分组信息')
+                raise ValueError(tr('断点没有分组信息'))
             total = len(result.groups)
             result.completed = sum(row.get('state')=='final_done' for row in result.groups)
             result.problems = validate_resume_files(result.path)
@@ -186,7 +187,7 @@ def inspect_resume(config,revision,cancelled=lambda:False,strict=False):
             try:
                 preflight_tool(tool)
             except (ValueError,OSError) as error:
-                raise ValueError(f'恢复前检测压缩工具失败：{error}。断点：{result.path}') from error
+                raise ValueError(tr('恢复前检测压缩工具失败：{0}。断点：{1}', error, result.path)) from error
             result.tool_config = tool
     except (ValueError,OSError,TypeError,KeyError,sqlite3.Error) as error:
         result.error = str(error)

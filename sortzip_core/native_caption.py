@@ -7,6 +7,7 @@ import sys
 from PySide6.QtCore import QObject,QEvent,QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
+from sortzip_core.i18n import tr
 
 
 COLOR_DEFAULT = 0xffffffff
@@ -159,4 +160,4 @@ class NativeCaption(QObject):
         self._last = key
         if self.status.errors and self.status.errors not in self._reported:
             self._reported.add(self.status.errors)
-            self.log('原生标题栏部分外观设置失败，不支持的部分沿用系统外观：'+', '.join(self.status.errors)+'\n')
+            self.log(tr('原生标题栏部分外观设置失败，不支持的部分沿用系统外观：')+', '.join(self.status.errors)+'\n')

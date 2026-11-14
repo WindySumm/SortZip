@@ -6,6 +6,7 @@ from pathlib import Path
 import uuid
 
 from sortzip_core.constants import validate_win_folder_name
+from sortzip_core.i18n import tr
 
 
 def _hash(path):
@@ -24,27 +25,27 @@ def write_bundle(folder, mappings):
         source = Path(source)
         if (validate_win_folder_name(source.name) or not isinstance(target,str)
                 or validate_win_folder_name(target) or source.is_symlink() or not source.is_file()):
-            raise ValueError('还原名称或文件无效')
+            raise ValueError(tr('还原名称或文件无效'))
         if source.name.casefold() in sources or target.casefold() in targets:
-            raise ValueError('同一还原组包含重复的来源或目标名称')
+            raise ValueError(tr('同一还原组包含重复的来源或目标名称'))
         sources.add(source.name.casefold())
         targets.add(target.casefold())
         parents.add(str(source.parent.resolve()).casefold())
         if len(parents)>1:
-            raise ValueError('同一脚本只能还原同一目录的文件')
+            raise ValueError(tr('同一脚本只能还原同一目录的文件'))
         before = source.stat()
         digest = _hash(source)
         after = source.stat()
         if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):
-            raise ValueError('生成还原清单期间文件发生变化')
+            raise ValueError(tr('生成还原清单期间文件发生变化'))
         records.append(dict(**{'from':source.name}, to=target, size=before.st_size, sha256=digest))
     if not records:
-        raise ValueError('还原清单不能为空')
+        raise ValueError(tr('还原清单不能为空'))
     job = hashlib.sha256(json.dumps(records,ensure_ascii=False,sort_keys=True).encode('utf-8')).hexdigest()
     for index, record in enumerate(records):
         name = f'.sortzip-restore-{job[:16]}-{index}.tmp'
         if name.casefold() in sources|targets:
-            raise ValueError('临时还原名称与文件冲突')
+            raise ValueError(tr('临时还原名称与文件冲突'))
         record['temp'] = name
     script = Path(__file__).with_name('restore_names.ps1').read_text(encoding='utf-8')
     manifest = json.dumps(dict(schema=1,job=job,files=records),ensure_ascii=False,indent=2)
@@ -59,7 +60,7 @@ def write_bundle(folder, mappings):
         if folder.is_symlink() or not folder.is_dir() or any(
                 not (folder/name).is_file() or (folder/name).is_symlink() or (folder/name).read_bytes()!=data
                 for name,data in desired.items()):
-            raise FileExistsError('还原脚本目录已占用或内容被修改')
+            raise FileExistsError(tr('还原脚本目录已占用或内容被修改'))
     else:
         folder.parent.mkdir(parents=True,exist_ok=True)
         staging = folder.with_name('.sortzip-kit-'+uuid.uuid4().hex+'.tmp')

@@ -7,6 +7,7 @@ from PySide6.QtCore import QObject,QEvent,Qt
 from PySide6.QtGui import QUndoStack,QUndoCommand
 from PySide6.QtWidgets import QApplication,QLineEdit,QTextEdit,QPlainTextEdit,QTableWidgetItem
 from sortzip_core.workspace_state import LayerDraft
+from sortzip_core.i18n import tr
 
 ROW_ID = Qt.ItemDataRole.UserRole+40
 
@@ -18,7 +19,7 @@ def structural(label):
             history = getattr(self,'structure_history',None)
             if history is None or history.applying or self._loading:
                 return method(self,*args,**kwargs)
-            with history.transaction(label):
+            with history.transaction(tr(label)):
                 return method(self,*args,**kwargs)
         return wrapped
     return decorate
@@ -106,7 +107,7 @@ class StructureHistory(QObject):
         if not hasattr(application,'_sortzip_undo_keys'):
             application._sortzip_undo_keys = UndoKeys(application)
             application.installEventFilter(application._sortzip_undo_keys)
-        for table,label in ((window.mapping_table,'调整映射顺序'),(window.naming.table,'调整规则顺序')):
+        for table,label in ((window.mapping_table,tr('调整映射顺序')),(window.naming.table,tr('调整规则顺序'))):
             table.rowsAboutToReorder.connect(lambda label=label:self.begin(label))
             table.rowsReordered.connect(self.end)
         window.naming.structureStarting.connect(lambda label:self.begin(label))

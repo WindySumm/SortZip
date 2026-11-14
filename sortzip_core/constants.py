@@ -1,3 +1,4 @@
+from sortzip_core.i18n import tr
 # ---- 扩展名分类定义 ----
 EXT_CATEGORIES = {
     "视频": [
@@ -50,14 +51,14 @@ def is_task_artifact(name):
 
 def validate_win_folder_name(name):
     if not name:
-        return "文件夹名不能为空"
+        return tr('文件夹名不能为空')
     for c in name:
         if c in _INVALID_FOLDER_CHARS or ord(c) < 32:
-            return f"文件夹名不能包含字符：{c}"
+            return tr('文件夹名不能包含字符：{0}', c)
     if name[-1] in (' ', '.'):
-        return "文件夹名不能以空格或句点结尾"
+        return tr('文件夹名不能以空格或句点结尾')
     if name.split('.')[0].upper() in _RESERVED_NAMES:
-        return f"文件夹名不能是 Windows 保留名称：{name}"
+        return tr('文件夹名不能是 Windows 保留名称：{0}', name)
     return None
 
 

@@ -4,6 +4,7 @@ from threading import Event
 from PySide6.QtCore import QObject,QRunnable,QThreadPool,Signal,Slot
 from sortzip_core.workspace_state import PreviewResult
 from sortzip_core.workspace_planning import build_workspace_preview
+from sortzip_core.i18n import tr
 
 
 class _JobSignals(QObject):
@@ -25,7 +26,7 @@ class _Job(QRunnable):
             result = self.builder(self.config,self.revision,self.stop.is_set,self.strict)
         except Exception as error:
             # No configuration repr: a strict execution snapshot contains passwords.
-            result = PreviewResult(self.revision,file_error=type(error).__name__+': 后台预检失败')
+            result = PreviewResult(self.revision,file_error=type(error).__name__+tr(': 后台预检失败'))
         self.signals.done.emit(self,result)
 
 

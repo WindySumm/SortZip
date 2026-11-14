@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from sortzip_core.formats import FORMATS
 from sortzip_core.nesting import Layer, plan_layers
+from sortzip_core.i18n import tr
 
 
 @dataclass(frozen=True)
@@ -24,7 +25,7 @@ def migrate_legacy(config):
     """
     fmt = config.get('archive_format','zip')
     if not isinstance(fmt,str) or fmt not in FORMATS:
-        raise ValueError('旧设置中的压缩格式不受支持，请重新确认')
+        raise ValueError(tr('旧设置中的压缩格式不受支持，请重新确认'))
     cap = FORMATS[fmt]
     enabled = config.get('first_compress',True)
     double = config.get('double_compress',False) and enabled
@@ -42,7 +43,7 @@ def migrate_legacy(config):
     notices = []
     if double:
         if first_replace:
-            notices.append('中间层改后缀设置已取消；新流程仅最外层允许修改后缀。')
+            notices.append(tr('中间层改后缀设置已取消；新流程仅最外层允许修改后缀。'))
         layers.append(Layer(1,fmt,False,None,'{source_range}',
             config.get('archive_suffix') or '.'+fmt if config.get('archive_rename_enable',False) else None,
             password,verify))

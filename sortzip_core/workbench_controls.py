@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, QEvent, QRectF, QPointF
 from PySide6.QtGui import QFont, QFontMetrics, QColor, QPainter, QPainterPath, QPixmap, QTransform, QPen, QPalette, QBrush
 from PySide6.QtWidgets import (QComboBox, QStyle,
     QStyledItemDelegate, QStyleOptionViewItem, QApplication)
+from sortzip_core.i18n import tr
 
 
 class NodeRole(IntEnum):
@@ -131,13 +132,15 @@ class FlowNavigationDelegate(QStyledItemDelegate):
             color = QColor(('#83a9d0' if selected else '#61768f') if dark else ('#6e9ac8' if selected else '#9caec4'))
             self.digits.paint(painter,digits,number,option.font,color)
         if index.data(NodeRole.Outer):
+            badge_text = tr('最外层')
+            font.setPixelSize(10)
+            badge.setLeft(badge.right()-max(badge.width(),QFontMetrics(font).horizontalAdvance(badge_text)+8))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor('#243e59' if dark else '#e7f1ff'))
             painter.drawRoundedRect(badge,3,3)
-            font.setPixelSize(10)
             painter.setFont(font)
             painter.setPen(accent)
-            painter.drawText(badge,Qt.AlignmentFlag.AlignCenter,'最外层')
+            painter.drawText(badge,Qt.AlignmentFlag.AlignCenter,badge_text)
         if index.data(NodeRole.Error):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor('#f0a864' if dark else '#bd6020'))

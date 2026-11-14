@@ -6,6 +6,7 @@ from pathlib import Path
 
 from sortzip_core.constants import is_task_artifact, validate_win_folder_name
 from sortzip_core.formats import final_suffix
+from sortzip_core.i18n import tr
 
 
 class StepError(ValueError):
@@ -48,15 +49,15 @@ def build_execution_plan(config, *, sources=None,inventory=None,context=None):
     Folder keys and source identities are relative POSIX paths, never basenames.
     """
     if not config.get('src') or not config.get('dest'):
-        raise ValueError('请选择输入和输出文件夹')
+        raise ValueError(tr('请选择输入和输出文件夹'))
     root, dest = Path(config['src']).resolve(), Path(config['dest']).resolve()
     if root == dest:
-        raise ValueError('输入和输出文件夹不能相同')
+        raise ValueError(tr('输入和输出文件夹不能相同'))
     if not root.is_dir():
-        raise ValueError('输入文件夹不存在')
+        raise ValueError(tr('输入文件夹不存在'))
     size = config.get('group_size', 1)
     if type(size) is not int or size < 1:
-        raise ValueError('每包文件数必须为正整数')
+        raise ValueError(tr('每包文件数必须为正整数'))
     records = {record.path:record for record in inventory} if inventory is not None else None
     iterator = records if records is not None else (sources if sources is not None else (root.rglob('*') if config.get('recursive') else root.iterdir()))
     grouped, used = {}, {}
@@ -71,7 +72,7 @@ def build_execution_plan(config, *, sources=None,inventory=None,context=None):
         if category is None:
             continue
         if validate_win_folder_name(category):
-            raise StepError('mapping',f'分类名称无效：{category}')
+            raise StepError('mapping',tr('分类名称无效：{0}', category))
         relative = source.relative_to(root)
         folder = Path(category) / (relative.parent if config.get('keep_hierarchy') else Path())
         folder_key = folder.as_posix()
@@ -112,9 +113,9 @@ def build_execution_plan(config, *, sources=None,inventory=None,context=None):
                                     Path(folder).name, classified.stem) if rule else None) or classified.name
             if (validate_win_folder_name(name) or '/' in name or '\\' in name
                     or is_task_artifact(name) or (config.get('output_list') and name.casefold() == 'list.txt')):
-                raise StepError('naming',f'重命名目标无效或与对照表冲突：{folder}/{name}')
+                raise StepError('naming',tr('重命名目标无效或与对照表冲突：{0}/{1}', folder, name))
             if name.casefold() in targets:
-                raise StepError('naming',f'重命名目标重复：{folder}/{name}')
+                raise StepError('naming',tr('重命名目标重复：{0}/{1}', folder, name))
             targets.add(name.casefold())
             entry.update(target_name=name,index=index)
             plan.append(entry)
@@ -132,10 +133,10 @@ def validate_plan_paths(plan,config,*,context=None):
         for folder in {e['folder'] for e in plan}}
     for folder in folders.values():
         if not folder.is_relative_to(dest):
-            raise ValueError('输出子目录路径越界')
+            raise ValueError(tr('输出子目录路径越界'))
     target_paths = [str(folders[e['folder']] / e['target_name']).casefold() for e in plan]
     if len(set(target_paths)) != len(target_paths):
-        raise StepError('naming','目标路径重复（Windows 不区分大小写）')
+        raise StepError('naming',tr('目标路径重复（Windows 不区分大小写）'))
     target_paths = set(target_paths)
     checked_groups = set()
     for entry in plan:
@@ -154,14 +155,14 @@ def validate_plan_paths(plan,config,*,context=None):
             if config.get('double_compress', True):
                 outputs.append(entry['group'] + final_suffix(config))
             if any(str(folder / name).casefold() in target_paths for name in outputs):
-                raise ValueError(f'压缩包与待压缩文件重名：{entry["folder"]}/{entry["group"]}')
+                raise ValueError(tr('压缩包与待压缩文件重名：{0}/{1}', entry["folder"], entry["group"]))
 
 def refresh_group_metadata(entries,config,*,context=None):
     """Cheap group annotations also used when reusing a cached file-name plan."""
     counts = Counter(entry['folder'] for entry in entries)
     size = config.get('group_size',1)
     if type(size) is not int or size<1:
-        raise ValueError('每包文件数必须为正整数')
+        raise ValueError(tr('每包文件数必须为正整数'))
     for entry in entries:
         if context: context.check()
         start = (entry['index']-1)//size*size+1
@@ -170,7 +171,7 @@ def refresh_group_metadata(entries,config,*,context=None):
         entry.update(group=base,archive=base+final_suffix(config) if config.get('first_compress',True) else '')
         if (config.get('first_compress',True) and not config.get('double_compress',True)
                 and config.get('archive_format','zip')=='7z' and config.get('enable_volume',True)):
-            entry['archive'] += f'（分卷时为 {base}.7z.001…）'
+            entry['archive'] += tr('（分卷时为 {0}.7z.001…）', base)
 
 
 def render_template(template, idx, ext, folder_name, original_name):

@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 
 from sortzip_core.archive_tools import entry_name
+from sortzip_core.i18n import tr
 
 
 def _derive(password,salt):
@@ -25,13 +26,13 @@ def make_checks(layers):
 
 def validate_checks(checks,encrypted):
     if not isinstance(checks,dict) or checks.keys()!={str(level) for level in encrypted}:
-        raise ValueError('断点缺少分层密码校验数据')
+        raise ValueError(tr('断点缺少分层密码校验数据'))
     for check in checks.values():
         if (not isinstance(check,dict) or set(check)!={'salt','digest'} or any(
                 not isinstance(check[key],str) or len(check[key])!=length or
                 any(char not in '0123456789abcdef' for char in check[key])
                 for key,length in (('salt',32),('digest',128)))):
-            raise ValueError('断点密码校验数据无效')
+            raise ValueError(tr('断点密码校验数据无效'))
 
 
 def legacy_sample(root,config,groups):
@@ -81,7 +82,7 @@ def verify_legacy(root,config,groups,executable,password,cancel_check,force_canc
     if not config.get('password'):
         return True
     if not password:
-        raise ValueError('请输入原任务密码')
+        raise ValueError(tr('请输入原任务密码'))
     sample = legacy_sample(root,config,groups)
     if sample is None:
         return True
@@ -89,7 +90,7 @@ def verify_legacy(root,config,groups,executable,password,cancel_check,force_canc
     try:
         return _test_sample(ArchiveTool('bandizip',executable),paths,entry,password,cancel_check,force_cancel_check)
     except subprocess.CalledProcessError as error:
-        raise ValueError(f'Bandizip 原归档校验失败，请检查密码和归档：{next(iter(paths))}') from error
+        raise ValueError(tr('Bandizip 原归档校验失败，请检查密码和归档：{0}', next(iter(paths)))) from error
 
 
 def verify(root,tool,plan,state,passwords,cancel_check=None,force_cancel_check=None):
@@ -106,7 +107,7 @@ def verify(root,tool,plan,state,passwords,cancel_check=None,force_cancel_check=N
         if state['schema']==4:
             check = state['password_checks'][str(layer)]
             if not hmac.compare_digest(_derive(password,bytes.fromhex(check['salt'])),bytes.fromhex(check['digest'])):
-                raise ValueError(f'第 {layer+1} 层密码与原任务不一致')
+                raise ValueError(tr('第 {0} 层密码与原任务不一致', layer+1))
         elif layer in samples:
             task,record = samples[layer]
             folder = root/record['folder']
@@ -116,5 +117,5 @@ def verify(root,tool,plan,state,passwords,cancel_check=None,force_cancel_check=N
                 if not _test_sample(tool,paths,entry,password,cancel_check,force_cancel_check):
                     return False
             except subprocess.CalledProcessError as error:
-                raise ValueError(f'{tool.name} 第 {layer+1} 层原归档校验失败，请检查密码和归档：{folder}') from error
+                raise ValueError(tr('{0} 第 {1} 层原归档校验失败，请检查密码和归档：{2}', tool.name, layer+1, folder)) from error
     return not (cancel_check and cancel_check())

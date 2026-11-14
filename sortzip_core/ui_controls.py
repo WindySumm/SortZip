@@ -4,6 +4,7 @@ from PySide6.QtCore import Qt, QRectF, QSize, QEvent, QSignalBlocker
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QAction, QIcon, QPixmap, QPalette
 from PySide6.QtWidgets import (QCheckBox, QStyle, QStyleOptionButton, QStyleOptionFocusRect,
     QWidget, QHBoxLayout, QGridLayout, QSizePolicy, QSpinBox, QToolButton, QLineEdit)
+from sortzip_core.i18n import tr
 
 
 class PasswordVisibility(QAction):
@@ -24,7 +25,7 @@ class PasswordVisibility(QAction):
 
     def refresh(self,*args):
         visible = self.isChecked()
-        label = '隐藏密码' if visible else '显示密码'
+        label = tr('隐藏密码') if visible else tr('显示密码')
         self.setText(label)
         self.setToolTip(label)
         for edit in self.edits:
@@ -81,7 +82,7 @@ class StepSpinBox(QSpinBox):
         self.lineEdit().setTextMargins(0,0,44,0)
         self.minus = QToolButton(self)
         self.plus = QToolButton(self)
-        for button,text,name,step in ((self.minus,'−','减少数量',-1),(self.plus,'+','增加数量',1)):
+        for button,text,name,step in ((self.minus,'−',tr('减少数量'),-1),(self.plus,'+',tr('增加数量'),1)):
             button.setText(text)
             button.setAccessibleName(name)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -184,8 +185,8 @@ class CompactFieldRow(QWidget):
 
     def refresh_metrics(self):
         metrics = self.count_label.fontMetrics()
-        self.count_label.setFixedWidth(max(90,metrics.horizontalAdvance('每包文件数')+2,
-                                           metrics.horizontalAdvance('每包单元数')+2))
+        self.count_label.setFixedWidth(max(90,metrics.horizontalAdvance(tr('每包文件数'))+2,
+                                           metrics.horizontalAdvance(tr('每包单元数'))+2))
         self.format_label.setFixedWidth(max(64,self.format_label.sizeHint().width()))
         self._reflow()
 

@@ -4,6 +4,7 @@ from PySide6.QtGui import QAction,QIcon,QPixmap,QPainter,QPen,QColor,QPainterPat
 from PySide6.QtWidgets import QWidget,QHBoxLayout,QToolButton,QMenu,QPushButton,QLineEdit,QProgressBar
 from sortzip_core import __version__
 from sortzip_core.widgets import show_manual_dialog,DropResumeButton
+from sortzip_core.i18n import tr
 
 
 def line_icon(name,dark=False):
@@ -83,22 +84,22 @@ class WorkbenchPolishMixin:
         self.commands,self.icon_buttons = {},[]
         self._polished = False
         for key,attr,text,callback,icon in (
-            ('theme','theme_btn','深色模式',self.toggle_theme,None),
-            ('settings','settings_btn','设置',self.show_settings,None),
-            ('add_layer','add_btn','添加压缩层',self.add_layer,'plus'),
-            ('copy_layer','copy_btn','复制本层',self.copy_layer,'copy'),
-            ('remove_layer','remove_btn','删除本层',self.remove_layer,'delete'),
-            ('summary','review_btn','参数摘要',self.review_summary,None)):
+            ('theme','theme_btn',tr('深色模式'),self.toggle_theme,None),
+            ('settings','settings_btn',tr('设置'),self.show_settings,None),
+            ('add_layer','add_btn',tr('添加压缩层'),self.add_layer,'plus'),
+            ('copy_layer','copy_btn',tr('复制本层'),self.copy_layer,'copy'),
+            ('remove_layer','remove_btn',tr('删除本层'),self.remove_layer,'delete'),
+            ('summary','review_btn',tr('参数摘要'),self.review_summary,None)):
             setattr(self,attr,self._command(key,text,callback,icon))
-        self.log_toggle = self._command('logs','日志',None,'logs',checkable=True)
+        self.log_toggle = self._command('logs',tr('日志'),None,'logs',checkable=True)
 
     def _polish_workbench(self):
-        self._command('manual','使用手册',lambda:show_manual_dialog(self))
-        self._command('github','GitHub 项目主页',self._open_project)
+        self._command('manual',tr('使用手册'),lambda:show_manual_dialog(self))
+        self._command('github',tr('GitHub 项目主页'),self._open_project)
         header = self.layout().itemAt(0).layout()
         self.findChild(QWidget,'Brand').setText('SortZip')
-        global_button = self._more('全局菜单',[],self)
-        appearance = global_button.menu().addMenu('外观')
+        global_button = self._more(tr('全局菜单'),[],self)
+        appearance = global_button.menu().addMenu(tr('外观'))
         appearance.addAction(self.theme_btn)
         for key in ('settings','manual','github'): global_button.menu().addAction(self.commands[key])
         global_button.menu().addSeparator()
@@ -110,7 +111,7 @@ class WorkbenchPolishMixin:
             container = getattr(self,name+'_container')
             layout = container.layout()
             field = getattr(self,name)
-            action = self._command('browse_'+name,'选择输入目录' if name=='source' else '选择输出目录',lambda checked=False,field=field:self._browse_folder(field),'folder')
+            action = self._command('browse_'+name,tr('选择输入目录') if name=='source' else tr('选择输出目录'),lambda checked=False,field=field:self._browse_folder(field),'folder')
             field.addAction(action,QLineEdit.ActionPosition.TrailingPosition)
             for tool in field.findChildren(QToolButton):
                 tool.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -127,58 +128,58 @@ class WorkbenchPolishMixin:
                 candidate.replaceWidget(self.navigation_heading,heading); break
         row.addWidget(self.navigation_heading); row.addStretch()
         row.addWidget(self._tool(self.add_btn,heading))
-        self.layer_menu_btn = self._more('当前层操作',[self.copy_btn,self.remove_btn],heading)
+        self.layer_menu_btn = self._more(tr('当前层操作'),[self.copy_btn,self.remove_btn],heading)
         row.addWidget(self.layer_menu_btn)
         self._context_menu(self.navigation,[self.copy_btn,self.remove_btn])
 
         self._polish_editors()
         self._polish_footer()
         self.locate_btn.setObjectName('QuietAction')
-        self.locate_btn.setText('定位来源步骤')
+        self.locate_btn.setText(tr('定位来源步骤'))
         self._polished = True
         self.apply_theme()
         self._sync_action_states()
 
     def _polish_editors(self):
         layout = self.mapping_page.layout()
-        self.map_all_btn = self._command('map_all','映射全部',self._map_all)
-        self.map_clear_btn = self._command('map_clear','清空映射',self._clear_mappings)
-        add = self._command('map_add','添加类型',self.add_mapping,'plus')
-        remove = self._command('map_remove','删除选中类型',self.remove_mapping,'delete')
-        common = self._command('common','常用类型',None,checkable=True)
+        self.map_all_btn = self._command('map_all',tr('映射全部'),self._map_all)
+        self.map_clear_btn = self._command('map_clear',tr('清空映射'),self._clear_mappings)
+        add = self._command('map_add',tr('添加类型'),self.add_mapping,'plus')
+        remove = self._command('map_remove',tr('删除选中类型'),self.remove_mapping,'delete')
+        common = self._command('common',tr('常用类型'),None,checkable=True)
         common.toggled.connect(self.preset_panel.setVisible)
         self.preset_grid.addWidget(self.preset_category,0,0,1,4)
         self.mapping_toolbar = QHBoxLayout(); self.mapping_toolbar.setSpacing(8)
         self.mapping_toolbar.addWidget(self._tool(add,text=True)); self.mapping_toolbar.addWidget(self._tool(common,text=True))
         self.mapping_toolbar.addStretch()
-        self.mapping_toolbar.addWidget(self._more('映射操作',[self.map_all_btn,remove,self.map_clear_btn],self.mapping_page))
+        self.mapping_toolbar.addWidget(self._more(tr('映射操作'),[self.map_all_btn,remove,self.map_clear_btn],self.mapping_page))
         layout.insertLayout(1,self.mapping_toolbar)
         self._context_menu(self.mapping_table,[self.map_all_btn,remove,self.map_clear_btn])
         self.mapping_table.currentCellChanged.connect(self._sync_action_states)
         controls = QHBoxLayout(); controls.setSpacing(8)
-        add_rule = self._command('rule_add','添加规则',lambda:self.naming.add_rule('*','{original}{ext}'),'plus')
-        remove_rule = self._command('rule_remove','删除选中规则',self.naming.remove_rule,'delete')
-        clear_rules = self._command('rule_clear','清空命名规则',self.naming.clear_rules)
+        add_rule = self._command('rule_add',tr('添加规则'),lambda:self.naming.add_rule('*','{original}{ext}'),'plus')
+        remove_rule = self._command('rule_remove',tr('删除选中规则'),self.naming.remove_rule,'delete')
+        clear_rules = self._command('rule_clear',tr('清空命名规则'),self.naming.clear_rules)
         controls.addWidget(self._tool(add_rule,text=True)); controls.addStretch()
-        controls.addWidget(self._more('命名规则操作',[remove_rule,clear_rules],self.naming))
+        controls.addWidget(self._more(tr('命名规则操作'),[remove_rule,clear_rules],self.naming))
         self.naming.layout().insertLayout(3,controls)
         self._context_menu(self.naming.table,[remove_rule,clear_rules])
         self.naming.table.currentCellChanged.connect(self._sync_action_states)
 
     def _polish_footer(self):
-        restore = self._command('resume','恢复任务',self._import_resume)
-        self.resume_btn = DropResumeButton('任务',self)
+        restore = self._command('resume',tr('恢复任务'),self._import_resume)
+        self.resume_btn = DropResumeButton(tr('任务'),self)
         self.resume_btn.resumeDropped.connect(self._start_resume)
         self.resume_btn.setObjectName('QuietAction')
-        self.resume_btn.setAccessibleName('任务菜单，可拖入断点恢复')
+        self.resume_btn.setAccessibleName(tr('任务菜单，可拖入断点恢复'))
         menu = QMenu(self.resume_btn); menu.addActions([restore,self.review_btn]); self.resume_btn.setMenu(menu)
         while self.footer.count(): self.footer.takeAt(0)
         self.progress_bar = QProgressBar(self)
         self.progress_bar.setRange(0,100)
         self.progress_bar.setValue(0)
-        self.run_btn = QPushButton("开始执行",self)
+        self.run_btn = QPushButton(tr('开始执行'),self)
         self.run_btn.setObjectName("Primary")
-        self.cancel_btn = QPushButton("取消",self)
+        self.cancel_btn = QPushButton(tr('取消'),self)
         self.cancel_btn.setEnabled(False)
         self.footer.setSpacing(8)
         self.footer.addWidget(self.resume_btn)

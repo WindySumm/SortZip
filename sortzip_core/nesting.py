@@ -8,6 +8,7 @@ from pathlib import PurePosixPath
 from sortzip_core.constants import validate_win_folder_name
 from sortzip_core.formats import LAYER_FORMATS as FORMATS, validate_compression
 from sortzip_core.planning import render_template,StepError
+from sortzip_core.i18n import tr
 
 
 @dataclass(frozen=True)
@@ -52,38 +53,38 @@ def plan_layers(inputs, layers, *, context=None, allow_rar=False):
     """
     units, layers = tuple(inputs), tuple(layers)
     if not layers:
-        raise ValueError('请至少添加一层压缩')
+        raise ValueError(tr('请至少添加一层压缩'))
     known, originals, scope_ranks = set(), set(), {}
     for unit in units:
         if context: context.check()
         if not isinstance(unit.unit_id, str) or not unit.unit_id or unit.unit_id in known:
-            raise ValueError('输入单元 ID 无效或重复')
+            raise ValueError(tr('输入单元 ID 无效或重复'))
         known.add(unit.unit_id)
         if (not isinstance(unit.folder, str) or not unit.folder or '\\' in unit.folder
                 or any(validate_win_folder_name(part) for part in unit.folder.split('/'))):
-            raise ValueError('单元目录必须是安全的相对路径')
+            raise ValueError(tr('单元目录必须是安全的相对路径'))
         if not isinstance(unit.original_ids, tuple) or not unit.original_ids:
-            raise ValueError('单元缺少原始文件身份')
+            raise ValueError(tr('单元缺少原始文件身份'))
         for identity in unit.original_ids:
             if not isinstance(identity, str) or not identity or identity in originals:
-                raise ValueError('原始文件身份无效或跨单元重复')
+                raise ValueError(tr('原始文件身份无效或跨单元重复'))
             originals.add(identity)
             ranks = scope_ranks.setdefault(unit.folder.casefold(), {})
             ranks[identity] = len(ranks)+1
     for index, layer in enumerate(layers):
         try:
             if any(type(value) is not bool for value in (layer.enable_volume, layer.verify)):
-                raise ValueError('分卷和校验开关必须为布尔值')
+                raise ValueError(tr('分卷和校验开关必须为布尔值'))
             if not isinstance(layer.name_template, str) or not isinstance(layer.password, str):
-                raise ValueError('命名模板和密码必须为字符串')
+                raise ValueError(tr('命名模板和密码必须为字符串'))
             if layer.suffix is not None and index != len(layers)-1:
-                raise ValueError('仅最外层允许修改后缀')
+                raise ValueError(tr('仅最外层允许修改后缀'))
             validate_compression(dict(first_compress=True, archive_format=layer.archive_format,
                 group_size=layer.group_size, enable_volume=layer.enable_volume,
                 volume=layer.volume, password=layer.password, double_compress=True,
                 archive_suffix=layer.suffix),allow_rar=allow_rar)
             if layer.password and len(layer.password) < 8:
-                raise ValueError('压缩密码至少需要 8 位字符')
+                raise ValueError(tr('压缩密码至少需要 8 位字符'))
         except ValueError as error:
             raise StepError(f'layer:{index}',str(error)) from error
     tasks = []
@@ -108,13 +109,13 @@ def plan_layers(inputs, layers, *, context=None, allow_rar=False):
                 stem = render_template(layer.name_template.replace('{source_range}',source_range), ordinal, '',
                     PurePosixPath(group[0].folder).name, base) or base
                 if validate_win_folder_name(stem) or any(c in stem for c in '*?[]'):
-                    raise StepError(f'layer:{layer_index}','压缩包命名模板生成了无效名称')
+                    raise StepError(f'layer:{layer_index}',tr('压缩包命名模板生成了无效名称'))
                 if stem.casefold() in names:
-                    raise StepError(f'layer:{layer_index}','同层同目录的压缩包名称重复')
+                    raise StepError(f'layer:{layer_index}',tr('同层同目录的压缩包名称重复'))
                 names.add(stem.casefold())
                 identity = f'layer:{layer_index+1}:folder:{folder_index+1}:group:{ordinal}'
                 if identity in known:
-                    raise ValueError('生成单元 ID 与输入冲突')
+                    raise ValueError(tr('生成单元 ID 与输入冲突'))
                 known.add(identity)
                 output = Unit(identity, group[0].folder,
                     tuple(original for child in group for original in child.original_ids))
@@ -142,12 +143,12 @@ def resolve_inputs(task, available):
         unit = available.get(identity)
         if (unit is None or unit.complete is not True or not isinstance(unit.files, tuple)
                 or not unit.files):
-            raise ValueError(f'输入单元尚未完整完成：{identity}')
+            raise ValueError(tr('输入单元尚未完整完成：{0}', identity))
         for path in unit.files:
             if not isinstance(path, str) or not path or path.casefold() in seen:
-                raise ValueError('输入产物路径无效或跨单元重复')
+                raise ValueError(tr('输入产物路径无效或跨单元重复'))
             seen.add(path.casefold())
             files.append(path)
     if not FORMATS[task.settings.archive_format]['multiple'] and len(files) != 1:
-        raise ValueError('该格式只能接收一个实体文件，不能打包包含多卷的单元')
+        raise ValueError(tr('该格式只能接收一个实体文件，不能打包包含多卷的单元'))
     return tuple(files)

@@ -11,6 +11,7 @@ import stat
 import tempfile
 
 from sortzip_core.constants import is_task_artifact, validate_win_folder_name
+from sortzip_core.i18n import tr
 
 
 DATABASE = '.sortzip-files.sqlite3'
@@ -20,9 +21,9 @@ LOCK = '.sortzip-task.lock'
 def identity(path):
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or getattr(info,'st_file_attributes',0)&0x400:
-        raise ValueError(f'文件类型无效：{path}')
+        raise ValueError(tr('文件类型无效：{0}', path))
     if not info.st_ino:
-        raise ValueError(f'文件系统无法识别文件身份：{path}')
+        raise ValueError(tr('文件系统无法识别文件身份：{0}', path))
     return (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns)
 
 
@@ -33,16 +34,16 @@ def exists(path):
 def safe_path(root,relative):
     if not isinstance(relative,str) or '\\' in relative or any(
             validate_win_folder_name(part) for part in relative.split('/')):
-        raise ValueError('断点包含无效的相对路径')
+        raise ValueError(tr('断点包含无效的相对路径'))
     path = root/relative
     for parent in reversed(path.parents):
         if not parent.is_relative_to(root) or parent==root or not exists(parent):
             continue
         info = parent.lstat()
         if not stat.S_ISDIR(info.st_mode) or getattr(info,'st_file_attributes',0)&0x400:
-            raise ValueError(f'目录已被替换或为链接：{parent}')
+            raise ValueError(tr('目录已被替换或为链接：{0}', parent))
     if not path.resolve().is_relative_to(root) or path.is_symlink():
-        raise ValueError(f'路径越界或为链接：{path}')
+        raise ValueError(tr('路径越界或为链接：{0}', path))
     return path
 
 
@@ -61,7 +62,7 @@ def task_lock(root):
                 import fcntl
                 fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except OSError as error:
-            raise ValueError(f'输出目录正在执行另一任务：{root}') from error
+            raise ValueError(tr('输出目录正在执行另一任务：{0}', root)) from error
         yield
     # Closing the handle releases the lock, including after process termination.
 
@@ -95,7 +96,7 @@ def journal(root,job,create=False,readonly=False):
             db.execute('PRAGMA synchronous=FULL')
         record = db.execute('SELECT job,phase FROM task').fetchall()
         if len(record)!=1 or record[0][0]!=job or record[0][1] not in ('classify','stage','commit','ready'):
-            raise ValueError('文件日志与断点不匹配')
+            raise ValueError(tr('文件日志与断点不匹配'))
         yield db
 
 
@@ -141,7 +142,7 @@ def rename_new(source,target):
         if not move(str(source),str(target),0x8):
             code = ctypes.get_last_error()
             if code==17:
-                raise OSError(errno.EXDEV,'跨盘移动需要先复制',str(source))
+                raise OSError(errno.EXDEV,tr('跨盘移动需要先复制'),str(source))
             raise ctypes.WinError(code)
     else:
         os.link(source,target)
@@ -166,7 +167,7 @@ def reconcile_rename(item,source,target,file_id):
             # The POSIX link/unlink implementation can leave both names
             # referring to the same inode when interrupted.
             if os.name=='nt' or identity(target)[:2]!=file_id:
-                raise ValueError(f'操作位置已占用：{target}')
+                raise ValueError(tr('操作位置已占用：{0}', target))
             item.check(target,file_id)
             source.unlink()
             _sync_dir(source.parent)
@@ -189,7 +190,7 @@ class FileStep:
     def check(self,path,file_id):
         expected = (*file_id,*self.source_id[2:])
         if not exists(path) or identity(path)!=expected or digest(path)!=self.sha256 or identity(path)!=expected:
-            raise ValueError(f'文件缺失、被替换或内容已变化：{path}')
+            raise ValueError(tr('文件缺失、被替换或内容已变化：{0}', path))
 
     def original(self):
         self.check(self.source,self.source_id[:2])
@@ -202,49 +203,49 @@ def _row_paths(root,source_root,job,item,index):
     copy = safe_path(root,item['folder']+f'/.sortzip-{job}-{index}.copy')
     staged = safe_path(root,item['folder']+f'/.sortzip-{job}-{index}.rename')
     if is_task_artifact(classified.name) or is_task_artifact(target.name):
-        raise ValueError('文件名与任务日志冲突')
+        raise ValueError(tr('文件名与任务日志冲突'))
     return original,classified,target,copy,staged
 
 
 def steps(root,state):
     raw_root = state['input_root']
     if not isinstance(raw_root,str) or not Path(raw_root).is_absolute():
-        raise ValueError('断点包含无效的输入目录')
+        raise ValueError(tr('断点包含无效的输入目录'))
     source_root = Path(raw_root)
     if source_root.resolve()!=source_root or source_root==root:
-        raise ValueError('恢复输入目录无效或已被替换')
+        raise ValueError(tr('恢复输入目录无效或已被替换'))
     groups = [set(),set(),set()]
     scratch = set()
     for index,item in enumerate(state['file_plan']):
         if not isinstance(item,dict) or not isinstance(item.get('folder'),str):
-            raise ValueError('断点文件记录无效')
+            raise ValueError(tr('断点文件记录无效'))
         for key in ('classified_name','target_name'):
             if not isinstance(item.get(key),str) or validate_win_folder_name(item[key]):
-                raise ValueError('断点文件名无效')
+                raise ValueError(tr('断点文件名无效'))
         paths = _row_paths(root,source_root,state['job'],item,index)
         for group,path in zip(groups,paths[:3]):
             key = str(path).casefold()
             if key in group:
-                raise ValueError(f'断点文件路径重复：{path}')
+                raise ValueError(tr('断点文件路径重复：{0}', path))
             group.add(key)
         scratch.update(str(path).casefold() for path in paths[3:])
         if paths[0].is_relative_to(root) or paths[0] in paths[1:]:
-            raise ValueError('断点的输入与输出位置重叠')
+            raise ValueError(tr('断点的输入与输出位置重叠'))
         source_id = item['identity']
         sha = item['sha256']
         if (not isinstance(source_id,list) or len(source_id)!=4 or
                 any(type(value) is not int or value<0 for value in source_id) or
                 not isinstance(sha,str) or len(sha)!=64 or any(c not in '0123456789abcdef' for c in sha)):
-            raise ValueError('断点文件身份无效')
+            raise ValueError(tr('断点文件身份无效'))
         yield FileStep(index,*paths,tuple(source_id),sha)
     if groups[0] & (groups[1]|groups[2]):
-        raise ValueError('断点的输入与输出位置重叠')
+        raise ValueError(tr('断点的输入与输出位置重叠'))
     destinations = groups[1]|groups[2]
     if scratch & destinations:
-        raise ValueError('断点的暂存路径与输出位置重叠')
+        raise ValueError(tr('断点的暂存路径与输出位置重叠'))
     for path in (*destinations,*scratch):
         if any(str(parent) in destinations for parent in Path(path).parents):
-            raise ValueError('断点的输出文件与目录位置重叠')
+            raise ValueError(tr('断点的输出文件与目录位置重叠'))
 
 
 def _classify(db,item,keep,step,file_id):
@@ -252,7 +253,7 @@ def _classify(db,item,keep,step,file_id):
     if step is None:
         item.original()
         if exists(target) or exists(item.copy):
-            raise ValueError(f'分类位置已占用：{target}')
+            raise ValueError(tr('分类位置已占用：{0}', target))
         target.parent.mkdir(parents=True,exist_ok=True)
         same_device = identity(source)[0]==target.parent.stat().st_dev
         step = 'move' if same_device and not keep else 'copy'
@@ -272,23 +273,23 @@ def _classify(db,item,keep,step,file_id):
     if step=='copy':
         item.original()
         if exists(target):
-            raise ValueError(f'分类位置已占用：{target}')
+            raise ValueError(tr('分类位置已占用：{0}', target))
         if file_id==(None,None):
             # A crash between creating and identifying a temporary file leaves
             # an ambiguous file. Preserve it and stop, rather than truncate it.
             if exists(item.copy):
-                raise ValueError(f'复制暂存位置已占用：{item.copy}')
+                raise ValueError(tr('复制暂存位置已占用：{0}', item.copy))
             with item.copy.open('xb') as output:
                 info = os.fstat(output.fileno())
                 file_id = (info.st_dev,info.st_ino)
             record(db,item.index,'copy',file_id)
         if not exists(item.copy) or identity(item.copy)[:2]!=file_id:
-            raise ValueError(f'复制暂存文件已被替换：{item.copy}')
+            raise ValueError(tr('复制暂存文件已被替换：{0}', item.copy))
         if os.name=='nt':
             item.copy.chmod(stat.S_IWRITE)
         with source.open('rb') as incoming,item.copy.open('r+b') as output:
             if (os.fstat(output.fileno()).st_dev,os.fstat(output.fileno()).st_ino)!=file_id:
-                raise ValueError(f'复制暂存文件已被替换：{item.copy}')
+                raise ValueError(tr('复制暂存文件已被替换：{0}', item.copy))
             output.truncate(0)
             shutil.copyfileobj(incoming,output)
             output.flush()
@@ -323,7 +324,7 @@ def _rename(db,item,step,file_id,stage):
     if step==initial:
         item.check(source,file_id)
         if exists(target):
-            raise ValueError(f'改名位置已占用：{target}')
+            raise ValueError(tr('改名位置已占用：{0}', target))
         record(db,item.index,intent,file_id)
         step = intent
     if step==intent:
@@ -337,11 +338,11 @@ def verify_ready(db,files):
     recorded = {index:(step,(device,inode)) for index,step,device,inode in
                 db.execute('SELECT id,step,device,inode FROM operations')}
     if phase(db)!='ready' or len(recorded)!=len(files):
-        raise ValueError('文件日志尚未完成')
+        raise ValueError(tr('文件日志尚未完成'))
     for item in files:
         step,file_id = recorded.get(item.index,(None,None))
         if step!='done':
-            raise ValueError('文件日志完成状态无效')
+            raise ValueError(tr('文件日志完成状态无效'))
         item.check(item.target,file_id)
 
 
@@ -349,7 +350,7 @@ def run(db,files,keep,stats,on_progress,cancelled):
     states = {index:(step,(device,inode)) for index,step,device,inode in
               db.execute('SELECT id,step,device,inode FROM operations')}
     if not states.keys() <= set(range(len(files))):
-        raise ValueError('操作日志包含未知文件')
+        raise ValueError(tr('操作日志包含未知文件'))
     current = phase(db)
     phases = ('classify','stage','commit','ready')
     valid = (
@@ -357,7 +358,7 @@ def run(db,files,keep,stats,on_progress,cancelled):
         {'classified','staging','staged','done'},
         {'staged','committing','done'}, {'done'})
     if any(states.get(item.index,(None,None))[0] not in valid[phases.index(current)] for item in files):
-        raise ValueError('操作日志阶段不一致')
+        raise ValueError(tr('操作日志阶段不一致'))
     for index in range(phases.index(current),3):
         for position,item in enumerate(files,1):
             if cancelled and cancelled():
@@ -367,7 +368,7 @@ def run(db,files,keep,stats,on_progress,cancelled):
                 _classify(db,item,keep,step,file_id)
                 stats['files_moved'] = position
                 if on_progress:
-                    on_progress(0,30,position,len(files),f'分类：{item.classified.name}')
+                    on_progress(0,30,position,len(files),tr('分类：{0}', item.classified.name))
             elif index==1:
                 if step=='done':
                     item.check(item.target,file_id)
@@ -376,7 +377,7 @@ def run(db,files,keep,stats,on_progress,cancelled):
             else:
                 _rename(db,item,step,file_id,False)
                 if on_progress:
-                    on_progress(30,40,position,len(files),f'重命名：{item.target.name}')
+                    on_progress(30,40,position,len(files),tr('重命名：{0}', item.target.name))
         set_phase(db,phases[index+1])
         states = {i:(step,(device,inode)) for i,step,device,inode in
                   db.execute('SELECT id,step,device,inode FROM operations')}
