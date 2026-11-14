@@ -197,7 +197,7 @@ Get-Content .build-validation\source-smoke.json
 
 ```powershell
 $report = Join-Path (Get-Location) '.build-validation\frozen-smoke.json'
-$process = Start-Process -FilePath '.\release\SortZip-v1.0.0.exe' `
+$process = Start-Process -FilePath '.\release\SortZip-v1.0.1.exe' `
     -ArgumentList @('--smoke-test', ('"' + $report + '"')) `
     -WindowStyle Hidden -Wait -PassThru
 $process.ExitCode

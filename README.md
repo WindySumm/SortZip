@@ -10,7 +10,7 @@ SortZip is a Windows utility for organizing files. Sort files into folders by ex
 
 ## Download and run
 
-Choose a version from GitHub Releases and run its EXE, such as `SortZip-v1.0.0.exe`. You can sort and rename files without installing a compression tool. To compress files, install one of the tools below and select it under **Final output**. Use **Settings** in the top-right menu to set and test its executable path.
+Choose a version from GitHub Releases and run its EXE, such as `SortZip-v1.0.1.exe`. You can sort and rename files without installing a compression tool. To compress files, install one of the tools below and select it under **Final output**. Use **Settings** in the top-right menu to set and test its executable path.
 
 On first launch, SortZip follows your system's preferred display languages. It supports Simplified Chinese and English, with English as the fallback. To override this, choose **Settings → Language** and restart SortZip.
 
@@ -20,7 +20,7 @@ On first launch, SortZip follows your system's preferred display languages. It s
 | [7-Zip](https://www.7-zip.org/) · `7z.exe` | ZIP, 7Z | ZIP, 7Z |
 | [WinRAR](https://www.rarlab.com/) · `Rar.exe` | RAR5 | RAR5 |
 
-All layers in a task use the same tool. Each layer can use a different format supported by that tool. A GZ or XZ archive can contain one file. If the release includes a checksum, run `Get-FileHash .\SortZip-v1.0.0.exe -Algorithm SHA256` in the download folder and compare the result with the `.sha256` file.
+All layers in a task use the same tool. Each layer can use a different format supported by that tool. A GZ or XZ archive can contain one file. If the release includes a checksum, run `Get-FileHash .\SortZip-v1.0.1.exe -Algorithm SHA256` in the download folder and compare the result with the `.sha256` file.
 
 ## First task
 
