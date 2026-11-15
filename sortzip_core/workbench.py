@@ -2,11 +2,11 @@
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import Qt,QTimer,QSettings,QUrl,Slot
+from PySide6.QtCore import Qt,QTimer,QSettings,QSignalBlocker,QUrl,Slot
 from PySide6.QtGui import QIcon,QDesktopServices,QTextCursor
 from PySide6.QtWidgets import (QApplication,QWidget,QVBoxLayout,QHBoxLayout,QFormLayout,QLabel,
     QPushButton,QFileDialog,QDialog,QDialogButtonBox,QTableWidgetItem,
-    QMessageBox,QGridLayout,QSizePolicy,QLineEdit)
+    QMessageBox,QGridLayout,QSizePolicy,QLineEdit,QScrollArea)
 
 from sortzip_core import __version__
 from sortzip_core.archive_tools import TOOL_FORMATS, TOOL_NAMES, check_tool, detect_tool
@@ -85,11 +85,28 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
             button.clicked.connect(lambda checked,value=keep:self._set_retention(value))
             shortcuts.addWidget(button)
         shortcuts.addStretch()
+        self.retention_toggle = QPushButton()
+        self.retention_toggle.setObjectName('RetentionSummary')
+        self.retention_toggle.setCheckable(True)
+        disclosure_layout = QHBoxLayout(self.retention_toggle)
+        disclosure_layout.setContentsMargins(0,0,10,0)
+        disclosure_layout.addStretch()
+        self.retention_arrow = QLabel('▸')
+        self.retention_arrow.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        disclosure_layout.addWidget(self.retention_arrow)
         self.retention_options = QWidget()
         self.retention_layout = QVBoxLayout(self.retention_options)
-        self.retention_layout.setContentsMargins(0,0,0,0)
+        self.retention_layout.setContentsMargins(6,0,10,0)
+        self.retention_layout.setSpacing(4)
+        self.retention_scroll = QScrollArea()
+        self.retention_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.retention_scroll.setWidgetResizable(True)
+        self.retention_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.retention_scroll.setWidget(self.retention_options)
+        self.retention_toggle.toggled.connect(self._show_retention_rows)
         final_layout.insertLayout(index+1,shortcuts)
-        final_layout.insertWidget(index+3,self.retention_options)
+        final_layout.insertWidget(index+3,self.retention_toggle)
+        final_layout.insertWidget(index+4,self.retention_scroll)
         self.retention_shortcuts = shortcuts
         self.restore_original_names = StateCheckBox(tr('随包附带原始文件名还原脚本'))
         self.restore_original_names.setToolTip(tr('手动解压各组后运行脚本，可校验文件并恢复原名。随包映射包含原始文件名，请按需启用。'))
@@ -98,14 +115,15 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         unpack_heading = QLabel(tr('SortZip 解包并恢复'))
         unpack_heading.setObjectName('SectionTitle')
         self.delivery_manifest = StateCheckBox(tr('生成自动解包清单'))
-        self.delivery_manifest.setToolTip(tr('生成供 SortZip 自动解压使用的 .sortzip.json 文件。请与整套最外层分卷一起交付。清单会公开外层格式和标准卷名。'))
+        self.delivery_manifest.setToolTip(tr('生成供 SortZip 自动解压使用的 .sortzip.json。分享清单和需要交付的完整外层分卷，并保留相对位置。清单会公开归档结构、文件名和相对目录。'))
         self.delivery_original = StateCheckBox(tr('自动恢复原文件名'))
-        self.delivery_original.setToolTip(tr('将原名写入最内层归档，供 SortZip 自动解压后恢复文件名。手动改名脚本和 List.txt 也可能包含原名，由各自的选项控制。'))
+        self.delivery_original.setToolTip(tr('将原名写入自动解包清单，供 SortZip 解包后还原。分享清单就会公开原名。手动改名脚本和 List.txt 由各自的选项控制。'))
         for offset,control in enumerate((unpack_heading,self.delivery_manifest,self.delivery_original),1):
             final_layout.insertWidget(final_layout.indexOf(self.restore_original_names)+offset,control)
         for control in (self.delivery_manifest,self.delivery_original):
             control.toggled.connect(self.change)
-        self._retention_signature = None
+        self._retention_layer_keys = ()
+        self._retention_checkboxes = []
         self.archive_tool_combo.currentIndexChanged.connect(self._archive_tool_changed)
         self.navigation.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.edit_scroll.setMinimumHeight(130)
@@ -160,6 +178,8 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
             self.paths.removeWidget(field)
             field.setPlaceholderText(tr('选择或拖入文件夹'))
             field.setAccessibleName(tr('输入目录') if name=='source' else tr('输出目录'))
+            if name=='destination':
+                field.setToolTip(tr('整理后的文件和压缩包放在这里。可选输入的上一级文件夹，结果会放在输入文件夹外。'))
             container = QWidget()
             layout = QHBoxLayout(container)
             layout.setContentsMargins(0,0,0,0)
@@ -322,16 +342,19 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         return hasattr(self,'controller') and self.controller.busy()
 
     def _sync_compression_ui(self):
-        enabled = self.state.compression_enabled and not self._task_busy()
+        editable = not self._task_busy()
+        enabled = self.state.compression_enabled and editable
         self.archive_tool_combo.setEnabled(enabled)
+        self.keep.setEnabled(editable)
+        self.output_list.setEnabled(editable)
         self.restore_original_names.setEnabled(enabled)
         self.delivery_manifest.setEnabled(enabled)
         self.delivery_original.setEnabled(enabled and self.state.delivery_manifest)
-        self.retention_options.setVisible(self.state.compression_enabled)
         for index in range(self.retention_shortcuts.count()-1):
-            self.retention_shortcuts.itemAt(index).widget().setVisible(self.state.compression_enabled)
-        if not self._task_busy():
-            self._refresh_retention()
+            button = self.retention_shortcuts.itemAt(index).widget()
+            button.setVisible(self.state.compression_enabled)
+            button.setEnabled(enabled)
+        self._refresh_retention(enabled)
         self.layer_editor.setEnabled(enabled)
         self.add_btn.setEnabled(enabled)
         self.copy_btn.setEnabled(enabled and self.draft() is not None)
@@ -349,38 +372,62 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
                 self.keep.setChecked(keep)
         self.change()
 
-    def _toggle_retained_layer(self,draft,checked):
-        draft.data['retain'] = checked
-        # Keep the existing checkbox alive while its signal is being handled.
-        self._retention_signature = self._retention_values()
+    def _toggle_retained_layer(self,index,checked):
+        self.state.layers[index].data['retain'] = checked
         self.change()
 
-    def _retention_values(self):
-        return tuple((draft.key,bool(draft.data.get('retain'))) for draft in self.state.layers)
+    def _show_retention_rows(self):
+        expanded = self.retention_toggle.isChecked()
+        self.retention_arrow.setText('▾' if expanded else '▸')
+        count = len(self.state.layers)
+        self.retention_toggle.setVisible(self.state.compression_enabled and count>1)
+        self.retention_scroll.setVisible(self.state.compression_enabled and (count==1 or expanded))
 
-    def _refresh_retention(self):
-        values = self._retention_values()
-        if values==self._retention_signature:
-            return
-        self._retention_signature = values
+    def _refresh_retention(self,editable):
+        keys = tuple(draft.key for draft in self.state.layers)
+        if keys!=self._retention_layer_keys:
+            self._retention_layer_keys = keys
+            self._rebuild_retention_rows(len(keys))
+        retained = 1
+        for draft,checkbox in zip(self.state.layers[:-1],self._retention_checkboxes):
+            checked = bool(draft.data.get('retain'))
+            with QSignalBlocker(checkbox):
+                checkbox.setChecked(checked)
+            retained += checked
+        self.retention_toggle.setText(tr('归档 · 保留 {0} / {1} 层',retained,len(keys)))
+        self.retention_options.setEnabled(editable)
+        self._show_retention_rows()
+
+    def _rebuild_retention_rows(self,count):
+        self._retention_checkboxes.clear()
         while self.retention_layout.count():
-            self.retention_layout.takeAt(0).widget().deleteLater()
-        for index,draft in enumerate(self.state.layers):
+            row = self.retention_layout.takeAt(0).widget()
+            row.hide()
+            row.deleteLater()
+        row_height = 32
+        for index in range(count):
             row = QWidget()
+            row.setFixedHeight(row_height)
             layout = QHBoxLayout(row)
             layout.setContentsMargins(0,0,0,0)
-            outer = index==len(self.state.layers)-1
+            outer = index==count-1
             checkbox = StateCheckBox(tr('第 {0} 层（最外层）',index+1) if outer else tr('第 {0} 层',index+1))
-            checkbox.setChecked(outer or bool(draft.data.get('retain')))
-            checkbox.setEnabled(not outer)
-            checkbox.toggled.connect(lambda checked,item=draft:self._toggle_retained_layer(item,checked))
+            if outer:
+                checkbox.setChecked(True)
+                checkbox.setEnabled(False)
+            else:
+                checkbox.toggled.connect(lambda checked,i=index:self._toggle_retained_layer(i,checked))
+                self._retention_checkboxes.append(checkbox)
             layout.addWidget(checkbox)
             layout.addStretch()
             if not outer:
                 button = QPushButton(tr('保留此层及内层'))
+                button.setObjectName('QuietAction')
                 button.clicked.connect(lambda checked,i=index:self._set_retention(True,i))
                 layout.addWidget(button)
             self.retention_layout.addWidget(row)
+        visible = min(count,5)
+        self.retention_scroll.setFixedHeight(visible*row_height+max(0,visible-1)*self.retention_layout.spacing())
 
     def _archive_tool_changed(self,*args):
         if self._loading or self._task_busy():
@@ -446,14 +493,13 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
     def _render_preview(self):
         super().refresh()
         self.locate_btn.setVisible(self.locate_btn.isEnabled())
-        self.run_btn.setEnabled(not self._task_busy() and not self._closing)
         result = self.state.preview
         if result is None:
             return
         self.notice.setText(tr('已扫描 {0} 个文件，匹配 {1} 个。', result.total_files, len(result.entries))+
             (tr('存在未匹配类型，可使用“映射全部”。') if result.total_files>len(result.entries) else tr('预览只读，确认执行后才处理文件。')))
         self.summary.setText(tr('输出目录：{0}\n\n匹配 {1} 个文件。', self.state.destination or tr('尚未选择'), len(result.entries))+
-            (tr('共 {0} 层，最外层 {1} 个完整单元。', len(self.state.layers), len(result.plan.final_ids)) if self.state.compression_enabled
+            (tr('共 {0} 层，最终生成 {1} 个压缩包。', len(self.state.layers), len(result.plan.final_ids)) if self.state.compression_enabled
              else tr('未启用压缩，只执行分类、命名与可选清单。')))
         if not self.state.compression_enabled:
             self.preview_status.setText(tr('未启用压缩：只执行分类、命名和可选清单。')+(' '+result.file_error if result.file_error else ''))
@@ -616,7 +662,7 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
 
     def _build_config(self):
         self.change()
-        return self.state.to_config(True)
+        return dict(self.state.to_config(True),managed_recovery=True)
 
     def _run(self):
         if self._task_busy():
@@ -626,10 +672,55 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         except (ValueError,TypeError) as error:
             self._task_error(str(error))
             return
+        if (config.get('delivery_manifest') and config.get('archive_tool') in ('bandizip','7zip')
+                and any(layer.password for layer in config.get('compression_layers',()))):
+            mode = self._choose_delivery_password_mode()
+            if mode is None:
+                return
+            if mode=='encrypted':
+                phrase = self._delivery_phrase()
+                if phrase is None:
+                    return
+                config.update(delivery_password_mode='encrypted',delivery_phrase=phrase)
+            elif mode=='plain':
+                if not self._confirm_resume(tr('任何拿到总清单的人都能读取压缩密码。确定明文附带？')):
+                    return
+                config['delivery_password_mode'] = 'plain'
         self.log.clear()
         self.progress_bar.setValue(0)
         self._save_settings()
         self.controller.execute(config,self.state.revision,self._confirm_config)
+
+    def _choose_delivery_password_mode(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(tr('交付密码'))
+        layout = QVBoxLayout(dialog)
+        label = QLabel(tr('选择密码交付方式'))
+        selector = QuietFocusComboBox(dialog)
+        selector.setProperty('softHover',True)
+        selector.setAttribute(Qt.WidgetAttribute.WA_Hover)
+        selector.setSizeAdjustPolicy(QuietFocusComboBox.SizeAdjustPolicy.AdjustToContents)
+        label.setBuddy(selector)
+        for mode,text in (('none',tr('不附带密码')),('encrypted',tr('用交付口令加密')),('plain',tr('明文附带密码'))):
+            selector.addItem(text,mode)
+        layout.addWidget(label)
+        layout.addWidget(selector)
+        selector.ensurePolished()
+        metrics = selector.fontMetrics()
+        selector.setMinimumWidth(max(metrics.horizontalAdvance(selector.itemText(i)) for i in range(selector.count()))+36)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        mode = selector.currentData() if dialog.exec()==QDialog.DialogCode.Accepted else None
+        dialog.deleteLater()
+        return mode
+
+    def _delivery_phrase(self):
+        dialog = PasswordDialog(self,hint=tr('请将交付口令与清单分开传递。'),delivery=True)
+        phrase = dialog.password() if dialog.exec()==QDialog.DialogCode.Accepted else None
+        dialog.deleteLater()
+        return phrase
 
     def _summary_text(self,config,result):
         lines = [tr('输入目录：{0}', config["src"]),tr('输出目录：{0}', config["dest"]),
@@ -645,7 +736,7 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
                 lines.append(tr('随包附带原始文件名还原脚本'))
             if config.get('delivery_manifest'):
                 lines.append(tr('SortZip 解包并恢复'))
-                lines.extend((tr('生成自动解包清单'),tr('包外清单会公开外层格式和标准卷名。')))
+                lines.extend((tr('生成自动解包清单'),tr('包外清单会公开归档结构、文件名和相对目录。')))
                 if config.get('delivery_original_names'):
                     lines.append(tr('自动恢复原文件名'))
             lines.append(tr('压缩工具：')+TOOL_NAMES[config.get('archive_tool','bandizip')])
@@ -655,11 +746,11 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
             for index,layer in enumerate(config['compression_layers']):
                 automatic_verify = index==0 or (index-1 not in config.get('retain_layers',()))
                 lines.append(tr('第 {0} 层：{1} · 每包 {2} ', index+1, layer.archive_format.upper(), layer.group_size)+
-                    (tr('文件') if index==0 else tr('完整单元'))+tr(' · 模板 {0}', layer.name_template)+
+                    (tr('文件') if index==0 else tr('压缩包'))+tr(' · 模板 {0}', layer.name_template)+
                     (tr(' · 分卷 ')+str(layer.volume) if layer.enable_volume else '')+
                     (tr(' · 已设置密码') if layer.password else '')+(tr(' · 校验') if layer.verify or automatic_verify else '')+
                     (tr(' · 后缀 ')+layer.suffix if layer.suffix else ''))
-            lines.append(tr('最外层 {0} 个完整单元；分卷数量及压缩后大小执行后确定。', len(result.plan.final_ids)))
+            lines.append(tr('最终生成 {0} 个压缩包。分卷数量和大小以实际结果为准。', len(result.plan.final_ids)))
         else:
             lines.append(tr('未启用压缩。'))
         if config.get('_space_report'):
@@ -681,7 +772,7 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         if not self.state.confirm_config and not result.prepared.get('_space_warning'):
             return True
         return QMessageBox.question(self,tr('确认执行'),self._summary_text(result.prepared,result)+
-            tr('\n\n将按这份预检快照执行，是否开始？'),QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,
+            tr('\n\n使用以上设置开始？'),QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)==QMessageBox.StandardButton.Yes
 
     @Slot(bool)
@@ -690,11 +781,16 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
             self.timer.stop()
             self.preview_service.cancel()
         for widget in (self.source_container,self.destination_container,self.recursive_cb,self.compression_cb,
-                self.refresh_btn,self.mapping_page,self.naming,self.final_page,self.settings_btn,self.review_btn):
+                self.refresh_btn,self.mapping_page,self.naming,self.settings_btn,self.review_btn):
             widget.setEnabled(not active)
-        self.run_btn.setEnabled(not active)
+        ready = not active and not self._closing
+        self.run_btn.setEnabled(ready)
+        self.commands['run'].setEnabled(ready)
         self.resume_btn.setEnabled(not active)
         self.cancel_btn.setEnabled(active)
+        self.commands['cancel'].setEnabled(active)
+        self.cancel_btn.setText(tr('取消'))
+        self.task_buttons.setCurrentWidget(self.cancel_btn if active else self.run_btn)
         self._sync_compression_ui()
         self._update_drag_enabled()
 
@@ -748,10 +844,12 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
             self.refresh()
 
     def _cancel(self):
-        if self._task_busy():
-            self.controller.cancel()
-            self.cancel_btn.setEnabled(False)
-            self._sync_action_states()
+        if not self._task_busy() or not self.cancel_btn.isEnabled():
+            return
+        self.cancel_btn.setText(tr('正在取消…'))
+        self.cancel_btn.setEnabled(False)
+        self.commands['cancel'].setEnabled(False)
+        self.controller.cancel()
 
     @Slot()
     def _on_cancel_waiting(self):
@@ -778,7 +876,11 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
         dialog.deleteLater()
 
     def _import_resume(self):
-        path,_ = QFileDialog.getOpenFileName(self,tr('选择断点文件'),self.destination.text(),
+        from sortzip_core.file_journal import RECOVERY
+        folder = Path(self.destination.text())
+        managed = folder/RECOVERY
+        start = str(managed) if self.destination.text() and managed.is_dir() else self.destination.text()
+        path,_ = QFileDialog.getOpenFileName(self,tr('选择断点文件'),start,
             tr('SortZip 断点 (*.json)'),options=QFileDialog.Option.DontUseNativeDialog)
         if path:
             self._start_resume(path)
@@ -817,7 +919,10 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
     def _resume_parameters(self,result):
         if self._closing:
             return None
-        destination = str(Path(result.path).parent)
+        from sortzip_core.file_journal import recovery_output
+        destination = str(recovery_output(Path(result.path)))
+        if result.kind=='cleanup':
+            return dict(resume_from=result.path,dest=destination)
         approval = {}
         if result.input_root:
             if not self._confirm_resume(tr('恢复需要访问原输入目录：\n{0}\n请确认目录和文件属于这次任务。', result.input_root)):
@@ -852,7 +957,13 @@ class WorkbenchWindow(WindowFitMixin,WorkbenchPolishMixin,WorkbenchView):
             if not self._confirm_resume(tr('多层断点：{0}\n压缩工具：{1}\n共 {2} 组，已完成 {3} 组，待处理 {4} 组。\n复用已完成产物；未完成组写入新的重试目录。', result.path, tool_label, total, done, total-done)+unverified):
                 return None
             self._show_resume_plan(result,passwords)
-            return dict(resume_from=result.path,layer_passwords=passwords,
+            delivery_options = {}
+            if result.config.get('delivery_password_mode')=='encrypted':
+                phrase = self._delivery_phrase()
+                if phrase is None:
+                    return None
+                delivery_options['delivery_phrase'] = phrase
+            return dict(resume_from=result.path,layer_passwords=passwords,**delivery_options,
                         dest=destination,**result.tool_config,**approval)
         total,done = len(result.groups),result.completed
         if done==total:

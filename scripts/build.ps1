@@ -1,4 +1,7 @@
-param([string]$Python = '.\.venv\Scripts\python.exe')
+param(
+    [string]$Python = '.\.venv\Scripts\python.exe',
+    [switch]$Validation
+)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $PSScriptRoot)).Path
@@ -11,7 +14,8 @@ $previousTmp = $env:TMP
 try {
     $validationRoot = Join-Path $projectRoot '.build-validation'
     $releaseRoot = Join-Path $projectRoot 'release'
-    foreach ($directory in @($validationRoot, $releaseRoot)) {
+    $outputRoots = if ($Validation) { @($validationRoot) } else { @($validationRoot, $releaseRoot) }
+    foreach ($directory in $outputRoots) {
         New-Item -ItemType Directory -Force -Path $directory | Out-Null
         if ((Get-Item -LiteralPath $directory -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
             throw "Output directory is a link: $directory"
@@ -42,11 +46,29 @@ try {
     $process = Start-Process -FilePath $candidate -ArgumentList @('--smoke-test', ('"' + $report + '"')) `
         -WindowStyle Hidden -Wait -PassThru
     if (Test-Path -LiteralPath $report) {
-        Copy-Item -LiteralPath $report -Destination (Join-Path $validationRoot "build-$version-smoke.json")
+        if (!$Validation) {
+            Copy-Item -LiteralPath $report -Destination (Join-Path $validationRoot "build-$version-smoke.json")
+        }
         $result = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
     }
     if ($process.ExitCode -ne 0 -or !$result -or $result.status -ne 'ok' -or $result.version -ne $version) {
         throw "Packaged startup check failed: $($result.error)"
+    }
+
+    if ($Validation) {
+        $executable = Join-Path $validationRoot 'SortZip-validation.exe'
+        $existing = Get-Item -LiteralPath $executable -Force -ErrorAction SilentlyContinue
+        if ($existing) {
+            if ($existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                throw "Unexpected validation executable path: $executable"
+            }
+            [IO.File]::Replace($candidate, $executable, [NullString]::Value)
+        } else {
+            [IO.File]::Move($candidate, $executable)
+        }
+        Copy-Item -LiteralPath $report -Destination (Join-Path $validationRoot 'latest-validation-smoke.json') -Force
+        Write-Output "Validation executable ($version): $executable"
+        return
     }
 
     $filename = "SortZip-$version.exe"

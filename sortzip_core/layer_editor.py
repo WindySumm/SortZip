@@ -18,6 +18,7 @@ class LayerRow(QGroupBox):
     apply_password = Signal()
     def __init__(self, value, parent=None, *, format_combo_factory=QComboBox,actions=True,inline_template=True):
         super().__init__(parent)
+        self.layer_index = 0
         self.setObjectName('LayerCard')
         form = QFormLayout(self)
         form.setContentsMargins(16,16,16,16)
@@ -63,7 +64,7 @@ class LayerRow(QGroupBox):
         self.rename = StateCheckBox(tr('修改最外层后缀'))
         self.rename.setChecked(value.suffix is not None)
         self.suffix = QLineEdit(value.suffix or '.'+value.archive_format)
-        self.group_label = QLabel(tr('每包单元数'))
+        self.group_label = QLabel(tr('每包压缩包数'))
         self.format_label = QLabel(tr('压缩格式'))
         self.basic_fields = CompactFieldRow(self.group_label,self.group,self.format_label,self.format)
         form.addRow(self.basic_fields)
@@ -116,13 +117,14 @@ class LayerRow(QGroupBox):
         self.sync()
 
     def set_layer_position(self,index,outer):
+        self.layer_index = index
         self.outer = outer
         title = tr('第 {0} 层', index+1)
         self.setTitle('')
         self.setAccessibleName(title+(tr('，最外层') if outer else ''))
         self.layer_title.setText(title)
         self.outer_badge.setVisible(outer)
-        self.group_label.setText(tr('每包文件数') if index==0 else tr('每包单元数'))
+        self.group_label.setText(tr('每包文件数') if index==0 else tr('每包压缩包数'))
         self.basic_fields.refresh_metrics()
         self.sync()
 
@@ -143,7 +145,10 @@ class LayerRow(QGroupBox):
             self._single_locked = False
             self.group.setValue(self._group_preference)
         self.group.setEnabled(capability['multiple'])
-        self.group.setToolTip('' if capability['multiple'] else tr('每包固定为 1 单元，且该单元只能有 1 个实体文件'))
+        if not capability['multiple']:
+            self.group.setToolTip(tr('此格式每包只能压缩一个文件。'))
+        else:
+            self.group.setToolTip(tr('整套分卷按一个压缩包计算。') if self.layer_index else '')
         self.rename.setEnabled(self.outer)
         self.rename.setToolTip('' if self.outer else tr('中间层保留真实后缀和分卷结构'))
         self.suffix.setEnabled(self.outer and self.rename.isChecked())
@@ -291,7 +296,7 @@ class LayerStack(QWidget):
         for index,row in enumerate(self.rows):
             row.set_layer_position(index,index==len(self.rows)-1)
             row.group.setPrefix('')
-            row.group.setToolTip(tr('每包原始文件数') if index==0 else tr('每包上一层完整单元数，分卷不会拆散'))
+            row.group.setToolTip(tr('每包原始文件数') if index==0 else tr('整套分卷按一个压缩包计算。'))
             row.remove_btn.setEnabled(len(self.rows)>1)
             if not row.outer:
                 row.rename.setChecked(False)

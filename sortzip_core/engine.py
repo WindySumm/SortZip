@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path, PureWindowsPath
 
 from sortzip_core.constants import RESUME_FILE_NAME, validate_win_folder_name
-from sortzip_core import __version__
+from sortzip_core import __version__, file_journal
 from sortzip_core.config import prepare_config
 from sortzip_core.formats import FORMATS, validate_compression, validate_volume, final_suffix
 # Compatibility exports for existing scripts using engine's original helper names.
@@ -17,7 +17,6 @@ from sortzip_core.planning import (SORT_FUNCS, _natural_key, _sort_files, build_
                                   render_template, _match_rule, _match_rule_hierarchy, check_naming_conflicts)
 from sortzip_core.i18n import tr
 
-SEP = "\t"
 
 
 class ForceCancelled(Exception):
@@ -155,12 +154,12 @@ def _disp_len(text):
     return width
 
 
-def _pad_center(text, width):
+def _pad_center(text, width, *, legacy=False):
     dlen = _disp_len(text)
     pad = width - dlen
     if pad <= 0:
         return text
-    left = (pad + 1) // 2
+    left = (pad + int(legacy)) // 2
     right = pad - left
     return ' ' * left + text + ' ' * right
 
@@ -205,78 +204,40 @@ def _collect_dirs(root, keep_hierarchy=False, only_dirs=None):
 
 def write_rename_list(dest_root, naming_rules, sort_by='name', group_size=1, archive_suffix='.zip',
                       compression_enabled=True, keep_hierarchy=False, only_dirs=None, execution_plan=None):
-    if execution_plan is not None:
-        import csv
-        by_folder = {}
-        for entry in execution_plan:
-            by_folder.setdefault(entry['folder'], []).append(entry)
-        folders = sorted(by_folder)
-        for folder in folders:
-            path = Path(dest_root) / folder / 'List.txt'
-            with path.open('x', encoding='utf-8', newline='') as stream:
-                writer = csv.writer(stream, delimiter='\t')
-                writer.writerow(['序号', '原文件名', '新文件名'] + (['所属压缩包名'] if compression_enabled else []))
-                for entry in by_folder[folder]:
-                    writer.writerow([entry['index'], entry['source_rel'], entry['target_name']] +
-                                    ([entry['archive']] if compression_enabled else []))
-        return
-    if compression_enabled:
-        COL_W = (4, 24, 24, 24)
-        HEADERS = ("序号", "原文件名", "新文件名", "所属压缩包名")
-    else:
-        COL_W = (4, 24, 24)
-        HEADERS = ("序号", "原文件名", "新文件名")
+    from sortzip_core.nested_pipeline import write_lists
     dest_root = Path(dest_root)
-    for folder in _collect_dirs(dest_root, keep_hierarchy, only_dirs):
-        files = [f for f in folder.iterdir() if f.is_file() and f.name.casefold() != RESUME_FILE_NAME]
-        if not files:
-            continue
-        if keep_hierarchy:
-            rule = _match_rule_hierarchy(naming_rules, folder, dest_root) if naming_rules else None
-        else:
-            rule = _match_rule(naming_rules, folder.name) if naming_rules else None
-        template = rule.get('template', '') if rule else ''
-        _sort_files(files, sort_by)
-
-        total = len(files)
-        hdr_cells = [_pad_center(h, COL_W[i]) for i, h in enumerate(HEADERS)]
-        lines = [SEP.join(hdr_cells)]
-
-        for idx, f in enumerate(files, start=1):
-            new_name = render_template(template, idx, f.suffix, folder.name, f.stem) or f.name
-
-            idx_str = str(idx)
-            orig_str = f.name
-            new_str = new_name
-
-            idx_lines = _wrap_text(idx_str, COL_W[0])
-            orig_lines = _wrap_text(orig_str, COL_W[1])
-            new_lines = _wrap_text(new_str, COL_W[2])
+    headers = ('序号','原文件名','新文件名') + (('所属压缩包名',) if compression_enabled else ())
+    contents = {}
+    if execution_plan is not None:
+        for entry in execution_plan:
+            row = (entry['index'],entry['source_rel'],entry['target_name'])
             if compression_enabled:
-                g = (idx - 1) // group_size
-                s = g * group_size + 1
-                e = min(g * group_size + group_size, total)
-                base = str(s) if s == e else f"{s}-{e}"
-                archive_name = f"{base}{archive_suffix}"
-                arch_str = archive_name
-                arch_lines = _wrap_text(arch_str, COL_W[3])
-                max_rows = max(len(idx_lines), len(orig_lines), len(new_lines), len(arch_lines))
-            else:
-                max_rows = max(len(idx_lines), len(orig_lines), len(new_lines))
-
-            for ri in range(max_rows):
-                a = _pad_center(idx_lines[ri] if ri < len(idx_lines) else '', COL_W[0])
-                b = _pad_center(orig_lines[ri] if ri < len(orig_lines) else '', COL_W[1])
-                c = _pad_center(new_lines[ri] if ri < len(new_lines) else '', COL_W[2])
+                row += (entry['archive'],)
+            contents.setdefault(dest_root/entry['folder'],[]).append(row)
+    else:
+        for folder in _collect_dirs(dest_root,keep_hierarchy,only_dirs):
+            files = [path for path in folder.iterdir() if path.is_file() and path.name.casefold()!=RESUME_FILE_NAME]
+            if not files:
+                continue
+            rule = (_match_rule_hierarchy(naming_rules,folder,dest_root) if keep_hierarchy else
+                    _match_rule(naming_rules,folder.name)) if naming_rules else None
+            template = rule.get('template','') if rule else ''
+            _sort_files(files,sort_by)
+            rows = []
+            for index,path in enumerate(files,1):
+                target = render_template(template,index,path.suffix,folder.name,path.stem) or path.name
+                row = (index,path.name,target)
                 if compression_enabled:
-                    d = _pad_center(arch_lines[ri] if ri < len(arch_lines) else '', COL_W[3])
-                    lines.append(SEP.join((a, b, c, d)))
-                else:
-                    lines.append(SEP.join((a, b, c)))
-
-        list_path = folder / "List.txt"
-        list_path.write_text("\n".join(lines), encoding="utf-8")
-        print(tr('已输出命名对照表: {0}', list_path))
+                    first = (index-1)//group_size*group_size+1
+                    last = min(first+group_size-1,len(files))
+                    stem = str(first) if first==last else f'{first}-{last}'
+                    row += (stem+archive_suffix,)
+                rows.append(row)
+            contents[folder] = rows
+    write_lists(contents,headers)
+    if execution_plan is None:
+        for folder in contents:
+            print(tr('已输出命名对照表: {0}',folder/'List.txt'))
 
 
 def rename_files_in_folders(dest_root, sort_by='name', on_progress=None, cancel_check=None,
@@ -397,13 +358,21 @@ def get_auto_volume(total_size_bytes):
 
 # ---- 恢复任务 ----
 
-def _checkpoint_path(dest_root):
-    return Path(dest_root) / RESUME_FILE_NAME
+def _checkpoint_path(dest_root, state=None):
+    from sortzip_core.file_journal import managed_compression
+    root = Path(dest_root).resolve()
+    if state is not None:
+        directory = file_journal.compression_directory(root,state) if state.get('managed_recovery') else root
+        return directory/RESUME_FILE_NAME
+    managed = managed_compression(root)
+    if managed is not None:
+        return managed/RESUME_FILE_NAME
+    return root/RESUME_FILE_NAME
 
 
 def _write_checkpoint(dest_root, data):
     from sortzip_core.file_journal import replace_durable
-    path = _checkpoint_path(dest_root)
+    path = _checkpoint_path(dest_root,data)
     tmp = path.parent / f".sortzip_checkpoint_{uuid.uuid4().hex}.tmp"
     try:
         with tmp.open('x', encoding='utf-8') as stream:
@@ -977,15 +946,16 @@ def main_from_config(config, on_progress=None, cancel_check=None, force_cancel_c
         if isinstance(header,dict) and header.get('schema') in (4,5):
             from sortzip_core.task_recovery import resume
             return resume(config,stats,on_progress,cancel_check,force_cancel_check)
-        if isinstance(header, dict) and header.get('kind')=='multilayer':
-            from sortzip_core.nested_pipeline import resume
-            return resume(config, stats, on_progress, cancel_check, force_cancel_check)
-        if config.get('_archive_tool_identity') is not None:
-            from sortzip_core.nested_pipeline import preflight_tool
-            preflight_tool(config)
-        return _resume_task(config['resume_from'], config.get('password', ''),
-                            config.get('bandizip', 'bandizip'), on_progress,
-                            cancel_check, force_cancel_check, stats)
+        with file_journal.task_lock(Path(config['resume_from']).parent):
+            if isinstance(header, dict) and header.get('kind')=='multilayer':
+                from sortzip_core.nested_pipeline import resume
+                return resume(config, stats, on_progress, cancel_check, force_cancel_check)
+            if config.get('_archive_tool_identity') is not None:
+                from sortzip_core.nested_pipeline import preflight_tool
+                preflight_tool(config)
+            return _resume_task(config['resume_from'], config.get('password', ''),
+                                config.get('bandizip', 'bandizip'), on_progress,
+                                cancel_check, force_cancel_check, stats)
     config = prepare_config(config)
     if '_nested_plan' in config:
         from sortzip_core.nested_pipeline import preflight_tool
@@ -1013,6 +983,13 @@ def main_from_config(config, on_progress=None, cancel_check=None, force_cancel_c
     if '_nested_plan' in config or (not config.get('first_compress',True) and 'archive_tool' in config):
         from sortzip_core.task_recovery import start
         return start(config,stats,on_progress,cancel_check,force_cancel_check)
+    root = Path(config['dest'])
+    root.mkdir(parents=True,exist_ok=True)
+    with file_journal.task_lock(root):
+        return _run_legacy_work(config,plan,stats,on_progress,cancel_check,force_cancel_check)
+
+
+def _run_legacy_work(config,plan,stats,on_progress,cancel_check,force_cancel_check):
     def report(start, end, cur, total, message):
         if on_progress:
             on_progress(start, end, cur, total, message)

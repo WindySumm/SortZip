@@ -1,12 +1,16 @@
 import hashlib
+import base64
 import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
+from threading import Event, Thread
 import unittest
 
-from sortzip_core.restore_bundle import write_bundle
+from sortzip_core.restore_bundle import (
+    CHINESE_CATEGORY_LAUNCHER, CHINESE_PAYLOAD_LAUNCHER, category_launcher, write_bundle, write_category_bundle,
+)
 
 
 class RestoreBundleTests(unittest.TestCase):
@@ -24,6 +28,17 @@ class RestoreBundleTests(unittest.TestCase):
     def run_script(self):
         return subprocess.run(['powershell.exe','-NoLogo','-NoProfile','-ExecutionPolicy','Bypass',
             '-File',str(self.kit/'Restore-Names.ps1')],capture_output=True,timeout=30)
+
+    def run_category(self):
+        return subprocess.run(['cmd.exe','/d','/c','Restore-Names.cmd'],cwd=self.kit,input=b'\r\n',
+                              capture_output=True,timeout=30)
+
+    def category_payload(self):
+        lines = (self.kit/'Restore-Names.cmd').read_bytes().splitlines()
+        start = lines.index(b'::SORTZIP-SCRIPT')+2
+        marker = lines.index(b'::SORTZIP-MANIFEST')
+        return (base64.b64decode(b''.join(lines[start:marker])),
+                base64.b64decode(b''.join(lines[marker+2:])))
 
     def test_portable_manifest_no_absolute_paths_and_no_overwrite(self):
         write_bundle(self.kit,[(self.a,'original.txt')])
@@ -43,6 +58,177 @@ class RestoreBundleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             write_bundle(self.kit,[(self.a,'same.txt'),(self.b,'SAME.txt')])
         self.assertFalse(self.kit.exists())
+
+    @unittest.skipUnless(os.environ.get('SORTZIP_INTEGRATION')=='1' and os.name=='nt','Windows script integration')
+    def test_localized_cmds_launch_fixed_scripts_from_chinese_paths(self):
+        for language in ('zh','en'):
+            with self.subTest(language=language):
+                category = self.root/f'视频 分类 {language}'
+                category.mkdir()
+                archive = category/'当前 名称.data'
+                archive.write_bytes(b'volume')
+                nested = category/'子目录 & 卷'
+                nested.mkdir()
+                piece = nested/'分卷 01.data'
+                piece.write_bytes(b'nested volume')
+                other = category/'另一 子目录'
+                other.mkdir()
+                other_piece = other/'分卷 02.data'
+                other_piece.write_bytes(b'other volume')
+                mappings = [(archive,'标准 名称.zip',None),(piece,'分卷 01.zip',None),
+                            (other_piece,'分卷 02.zip',None)]
+                write_category_bundle(category,mappings,language=language,adjacent=True)
+                launcher = CHINESE_CATEGORY_LAUNCHER if language=='zh' else 'Restore-Names.cmd'
+                self.assertEqual(list(category.glob('*.cmd')),[category/launcher])
+                self.assertFalse((category/'Restore-Archive-Names').exists())
+                result = subprocess.run(['cmd.exe','/d','/c',launcher],cwd=category,input=b'\r\n',
+                                        capture_output=True,timeout=30)
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertEqual((category/'标准 名称.zip').read_bytes(),b'volume')
+                self.assertEqual((nested/'分卷 01.zip').read_bytes(),b'nested volume')
+                self.assertEqual((other/'分卷 02.zip').read_bytes(),b'other volume')
+                self.assertFalse((category/'.sortzip-restore-names.lock').exists())
+                member = category/'整理后.txt'
+                member.write_bytes(b'payload')
+                embedded = category/'解包 文件'
+                write_bundle(embedded,[(member,'原始 文件.txt')],embedded=True,language=language)
+                member.rename(embedded/member.name)
+                launcher = CHINESE_PAYLOAD_LAUNCHER if language=='zh' else 'SortZip-Restore-Names.cmd'
+                result = subprocess.run(['cmd.exe','/d','/c',launcher],cwd=embedded,input=b'\r\n',
+                                        capture_output=True,timeout=30)
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertEqual((embedded/'原始 文件.txt').read_bytes(),b'payload')
+                script = embedded/'SortZip-Restore-Names.ps1'
+                command = ("[Threading.Thread]::CurrentThread.CurrentUICulture = "
+                           "[Globalization.CultureInfo]::GetCultureInfo('zh-CN'); "
+                           f"& '{script}'; exit $LASTEXITCODE")
+                result = subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass',
+                                         '-Command',command],capture_output=True,timeout=30)
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertNotIn(b'Already restored',result.stdout)
+
+    @unittest.skipUnless(os.environ.get('SORTZIP_INTEGRATION')=='1' and os.name=='nt','Windows script integration')
+    def test_category_restore_skips_and_later_recovers_missing_or_staged_files(self):
+        category = self.root/'视频'
+        sub = category/'课程'
+        sub.mkdir(parents=True)
+        self.kit = category/'Restore-Archive-Names'
+        paths = [sub/f'卷-{index}.data' for index in range(6)]
+        for index,path in enumerate(paths):
+            path.write_bytes(bytes([index]))
+        write_category_bundle(self.kit,[(path,path.with_suffix('.zip').name,None) for path in paths])
+        for path in paths[1:]:
+            path.unlink()
+        result = self.run_category()
+        self.assertEqual(result.returncode,2,result.stdout+result.stderr)
+        self.assertIn(b'Restored: 1.',result.stdout)
+        self.assertIn(b'Missing: 5.',result.stdout)
+        self.assertEqual(paths[0].with_suffix('.zip').read_bytes(),b'\0')
+        paths[1].write_bytes(b'bad')
+        paths[2].write_bytes(b'\x02')
+        paths[2].with_suffix('.zip').write_bytes(b'occupied')
+        _,manifest = self.category_payload()
+        prefix = hashlib.sha256(manifest).hexdigest()[:24].upper()
+        (sub/f'.sortzip-restore-{prefix}-3.tmp').write_bytes(b'\x03')
+        result = self.run_category()
+        self.assertEqual(result.returncode,2,result.stdout+result.stderr)
+        self.assertIn(b'Already restored: 1.',result.stdout)
+        self.assertIn(b'Failed: 1.',result.stdout)
+        self.assertIn(b'Occupied: 1.',result.stdout)
+        self.assertEqual(paths[3].with_suffix('.zip').read_bytes(),b'\x03')
+        self.assertEqual(paths[1].read_bytes(),b'bad')
+        self.assertEqual(paths[2].with_suffix('.zip').read_bytes(),b'occupied')
+        paths[1].write_bytes(b'\x01')
+        self.assertEqual(self.run_category().returncode,2)
+        self.assertEqual(paths[1].with_suffix('.zip').read_bytes(),b'\x01')
+
+    @unittest.skipUnless(os.environ.get('SORTZIP_INTEGRATION')=='1' and os.name=='nt','Windows script integration')
+    def test_category_cmd_pauses_only_when_attention_needed(self):
+        source = self.root/'volume.data'
+        source.write_bytes(b'archive')
+        write_category_bundle(self.root,[(source,'volume.zip',None)],adjacent=True)
+        command = ['cmd.exe','/d','/c','Restore-Names.cmd']
+        for _ in range(2):
+            with subprocess.Popen(command,cwd=self.root,stdin=subprocess.PIPE,stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT) as proc:
+                try:
+                    self.assertEqual(proc.wait(timeout=20),0)
+                    self.assertIn(b'Restored:',proc.stdout.read())
+                finally:
+                    if proc.poll() is None:
+                        proc.kill()
+        (self.root/'volume.zip').unlink()
+        with subprocess.Popen(command,cwd=self.root,stdin=subprocess.PIPE,stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT) as proc:
+            summary = Event()
+            def watch_output():
+                for line in proc.stdout:
+                    if b'Missing: 1.' in line:
+                        summary.set()
+            reader = Thread(target=watch_output,daemon=True)
+            reader.start()
+            try:
+                self.assertTrue(summary.wait(timeout=20))
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    proc.wait(timeout=0.3)
+                proc.stdin.write(b'\r\n')
+                proc.stdin.flush()
+                self.assertEqual(proc.wait(timeout=20),2)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                reader.join(timeout=20)
+
+    @unittest.skipUnless(os.environ.get('SORTZIP_INTEGRATION')=='1' and os.name=='nt','Windows script integration')
+    def test_category_restore_refuses_paths_outside_the_category(self):
+        category = self.root/'视频'
+        sub = category/'课程'
+        sub.mkdir(parents=True)
+        volume = sub/'archive.data'
+        volume.write_bytes(b'volume')
+        self.kit = category/'Restore-Archive-Names'
+        write_category_bundle(self.kit,[(volume,'archive.zip',None)])
+        launcher = self.kit/'Restore-Names.cmd'
+        original = launcher.read_bytes()
+        script,manifest = self.category_payload()
+        broken = original.splitlines()
+        broken[broken.index(b'::SORTZIP-MANIFEST')+1] = b'0'*64
+        launcher.write_bytes(b'\r\n'.join(broken)+b'\r\n')
+        self.assertEqual(self.run_category().returncode,1)
+        self.assertEqual(volume.read_bytes(),b'volume')
+        invalid = json.loads(manifest)
+        invalid['files'][0]['to'] = '../archive.zip'
+        launcher.write_bytes(category_launcher(script,json.dumps(invalid).encode('utf-8')))
+        self.assertEqual(self.run_category().returncode,1)
+        self.assertEqual(volume.read_bytes(),b'volume')
+        launcher.write_bytes(original)
+        outside = self.root/'outside'
+        sub.rename(outside)
+        subprocess.run(['cmd','/c','mklink','/J',str(sub),str(outside)],check=True,capture_output=True)
+        try:
+            result = self.run_category()
+            self.assertIn(b'Unsafe directory:',result.stdout)
+            self.assertEqual((outside/volume.name).read_bytes(),b'volume')
+            self.assertFalse((outside/'archive.zip').exists())
+        finally:
+            sub.rmdir()
+
+    @unittest.skipUnless(os.environ.get('SORTZIP_INTEGRATION')=='1' and os.name=='nt','Windows script integration')
+    def test_category_restore_large_manifest_in_one_cmd(self):
+        self.kit = self.root/'恢复 & 工具!'
+        volumes = [self.root/f'档案 {i:03d}.data' for i in range(96)]
+        for volume in volumes:
+            volume.write_text('volume')
+        mappings = [(volume,volume.with_suffix('.zip').name,None) for volume in volumes]
+        write_category_bundle(self.kit,mappings)
+        write_category_bundle(self.kit,mappings)
+        launcher = self.kit/'Restore-Names.cmd'
+        self.assertGreater(launcher.stat().st_size,8191)
+        self.assertLess(max(map(len,launcher.read_bytes().splitlines())),8191)
+        result = self.run_category()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertTrue(all(volume.with_suffix('.zip').is_file() for volume in volumes))
+        self.assertEqual(list(self.kit.iterdir()),[launcher])
 
     @unittest.skipUnless(os.environ.get('SORTZIP_INTEGRATION')=='1' and os.name=='nt','Windows script integration')
     def test_two_phase_swap_and_repeated_execution(self):

@@ -581,7 +581,7 @@ class WorkbenchView(QWidget):
             self._tree_render_key = key
         elif self.state.selected not in ('mapping','naming'):
             self.locate_btn.setEnabled(self.preview_tabs.currentIndex()==0 and bool(plan.tasks))
-        self.summary.setText(tr('输出位置：{0}\n\n{1} 个原文件 → {2} 层压缩 → {3} 个最外层完整单元。\n\n展开右侧产物查看直接输入，选中成员后可定位来源步骤。', self.state.destination, len(entries), len(self.state.layers), len(plan.final_ids)))
+        self.summary.setText(tr('输出位置：{0}\n\n{1} 个文件 → {2} 层压缩 → {3} 个最终压缩包', self.state.destination, len(entries), len(self.state.layers), len(plan.final_ids)))
         self._navigation_status(plan)
 
     def _fill_step_tree(self,entries,plan):
@@ -604,12 +604,14 @@ class WorkbenchView(QWidget):
                 name = task.archive_stem+(task.settings.suffix or '.'+task.settings.archive_format)
                 if task.settings.enable_volume:
                     name += tr('（入口卷执行后确定）')
-                root = QTreeWidgetItem(self.tree,[tr('{0} 个完整输入单元', len(task.input_ids)),task.unit.folder+'/'+name])
+                count = len(task.input_ids)
+                label = tr('{0} 个文件',count) if index==0 else tr('{0} 个压缩包',count)
+                root = QTreeWidgetItem(self.tree,[label,task.unit.folder+'/'+name])
                 root.setData(0,Qt.ItemDataRole.UserRole,self.state.layers[index].key if selected=='final' else ('naming' if index==0 else self.state.layers[index-1].key))
                 for identity in task.input_ids:
                     previous = tasks.get(identity)
                     label = (previous.archive_stem+'.'+previous.settings.archive_format) if previous else sources[identity]['target']
-                    child = QTreeWidgetItem(root,[label,tr('完整单元')+(tr(' · 包含整套分卷') if previous and previous.settings.enable_volume else '')])
+                    child = QTreeWidgetItem(root,[label,tr('整套分卷') if previous and previous.settings.enable_volume else ''])
                     child.setData(0,Qt.ItemDataRole.UserRole,'naming' if index==0 else self.state.layers[index-1].key)
                 root.setExpanded(True)
             self.locate_btn.setEnabled(self.preview_tabs.currentIndex()==0)
@@ -681,7 +683,7 @@ class WorkbenchView(QWidget):
                 count = sum(task.layer_index==level for task in plan.tasks) if plan else '—'
                 data = draft.data
                 group = data['group'] if FORMATS[data['format']]['multiple'] else 1
-                detail = tr('{0} · 每包 {1} {2}', data['format'].upper(), group, tr('文件') if level==0 else tr('单元'))
+                detail = tr('{0} · 每包 {1} {2}', data['format'].upper(), group, tr('文件') if level==0 else tr('压缩包'))
                 issue = tr('密码未确认') if data['password'] and FORMATS[data['format']]['password'] and not self.password_ready(data) else ''
                 extra = tr('共 {0} 组', count)
             else:
@@ -771,7 +773,10 @@ class WorkbenchView(QWidget):
             QuietFocusComboBox[keyboardFocus="true"] {{background:{'#2a3b50' if self._dark else '#edf4fc'};border:1px solid {border};}}
             QuietFocusComboBox:disabled {{background:{bg};color:{muted};border:1px solid {border};}}
             QSpinBox QLineEdit {{border:0;padding:0;min-height:0;}}
-            QSpinBox QToolButton {{border:0;border-left:1px solid {border};background:transparent;font-size:14px;}}
+            QSpinBox QToolButton#SpinStep {{border:0;border-radius:4px;background:transparent;padding:0;font-size:15px;}}
+            QSpinBox QToolButton#SpinStep:hover:enabled {{background:{'#2e3a48' if self._dark else '#edf1f5'};}}
+            QSpinBox QToolButton#SpinStep:pressed:enabled {{background:{'#384a5c' if self._dark else '#e1e7ee'};}}
+            QSpinBox QToolButton#SpinStep:disabled {{color:{'#67778b' if self._dark else '#a4aeb8'};}}
             QPushButton {{padding:7px 10px;background:{surface};border:1px solid {border};border-radius:5px;}}
             QPushButton:hover,QToolButton:hover {{background:{'#243e59' if self._dark else '#e7f1ff'};}}
             QPushButton:pressed,QToolButton:pressed {{background:{'#31516f' if self._dark else '#d4e7fc'};}}

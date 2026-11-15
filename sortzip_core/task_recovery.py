@@ -4,13 +4,27 @@ from pathlib import Path
 import re
 import secrets
 import sqlite3
+from datetime import datetime
 from time import monotonic
 
 from sortzip_core import engine, file_journal as files, nested_pipeline, resume_passwords, retention
 from sortzip_core.constants import RESUME_FILE_NAME
 from sortzip_core.nested_execution import execute_plan, task_specs
 from sortzip_core.nested_resume import load_resume
-from sortzip_core.i18n import tr
+from sortzip_core.i18n import current_language, tr
+
+
+def _journal_issue(error):
+    if isinstance(error,OverflowError):
+        return tr('无法保存文件的恢复记录。')
+    if isinstance(error,sqlite3.Error):
+        code = getattr(error,'sqlite_errorcode',0) & 0xff
+        if code==sqlite3.SQLITE_FULL:
+            return tr('磁盘空间不足，无法保存恢复记录。')
+        if code in (sqlite3.SQLITE_BUSY,sqlite3.SQLITE_LOCKED):
+            return tr('恢复记录正在被占用，请关闭正在使用它的程序后重试。')
+        return tr('无法读取或保存恢复记录。')
+    return error
 
 
 def read_state(path,*,state=None):
@@ -29,7 +43,15 @@ def read_state(path,*,state=None):
     if state['kind']=='file_task' and (state.get('tasks')!=[] or state.get('completed')!={} or
                                       state.get('archive_tool') is not None):
         raise ValueError(tr('只分类任务包含无效的归档记录'))
-    operations = list(files.steps(path.parent,state))
+    root = files.recovery_output(path)
+    if state.get('managed_recovery',False) is not (root!=path.parent):
+        raise ValueError(tr('文件任务断点结构无效'))
+    if root!=path.parent:
+        if files.compression_directory(root,state)!=path.parent:
+            raise ValueError(tr('文件任务断点结构无效'))
+    elif 'recovery_folder' in state:
+        raise ValueError(tr('文件任务断点结构无效'))
+    operations = list(files.steps(root,state))
     expected_sources = {'source:'+entry['source_rel']:{str(step.target):list(step.source_id[2:])}
                         for entry,step in zip(state['file_plan'],operations,strict=True)}
     if state['sources']!=expected_sources:
@@ -46,6 +68,17 @@ def read_state(path,*,state=None):
             or state.get('delivery_original_names') and not state.get('delivery_manifest')
             or state.get('delivery_manifest') and state['schema']!=retention.SCHEMA):
         raise ValueError(tr('解包清单结构无效'))
+    mode = state.get('delivery_password_mode','none')
+    aggregate = state.get('task_delivery',False)
+    if (type(aggregate) is not bool or mode not in ('none','plain','encrypted')
+            or (aggregate and (not state.get('delivery_manifest') or not state.get('managed_recovery')
+                               or state.get('archive_tool') not in ('bandizip','7zip')))
+            or (not aggregate and mode!='none')
+            or type(state.get('finished',False)) is not bool):
+        raise ValueError(tr('解包清单结构无效'))
+    if 'delivery_manifest_name' in state:
+        from sortzip_core.delivery_manifest import task_manifest_name
+        task_manifest_name(state)
     return state,operations
 
 
@@ -64,6 +97,7 @@ def input_needed(db,operations):
 
 
 def start(config,stats,on_progress,cancel_check,force_cancel_check):
+    started_at = datetime.now()
     root = Path(config['dest']).resolve()
     source_root = Path(config['src']).resolve()
     plan = config.get('_nested_plan')
@@ -97,13 +131,30 @@ def start(config,stats,on_progress,cancel_check,force_cancel_check):
                  files_ready=False,archive_tool=config.get('archive_tool','bandizip') if plan else None,
                  tasks=task_specs(plan) if plan else [],completed={},final_ids=list(plan.final_ids) if plan else [],
                  password_checks=resume_passwords.make_checks(nested_pipeline.prepare_layers(config)) if plan else {})
-    if plan and (config.get('retain_layers') is not None or config.get('delivery_manifest')):
+    if plan:
+        from sortzip_core.archive_publication import CATEGORY_FILE_LAYOUT
+        state['script_language'] = current_language()
+        state['category_restore_layout'] = CATEGORY_FILE_LAYOUT
+        state['publication'] = dict(started=False,done=[])
+    if config.get('managed_recovery'):
+        state['managed_recovery'] = True
+    if plan and (config.get('retain_layers') is not None or config.get('delivery_manifest')
+                 or config.get('restore_original_names')):
         keep = config.get('retain_layers')
         outer = plan.tasks[-1].layer_index
         state.update(schema=retention.SCHEMA,retain_layers=list(range(outer) if keep is None else keep),cleanup={},
                      restore_original_names=bool(config.get('restore_original_names')))
         if config.get('delivery_manifest'):
+            from sortzip_core.delivery_manifest import uses_task_manifest
             state.update(delivery_manifest=True,delivery_original_names=bool(config.get('delivery_original_names')))
+            if uses_task_manifest(config):
+                state['task_delivery'] = True
+                mode = config.get('delivery_password_mode','none')
+                if mode not in ('none','plain','encrypted'):
+                    raise ValueError(tr('交付密码记录无效。'))
+                if mode=='encrypted' and not 12<=len(config.get('delivery_phrase',''))<=1024:
+                    raise ValueError(tr('交付口令至少需要 12 个字符。'))
+                state['delivery_password_mode'] = mode
         retention.validate(state,plan)
     operations = list(files.steps(root,state))
     state['sources'] = {'source:'+entry['source_rel']:{str(step.target):list(step.source_id[2:])}
@@ -111,10 +162,20 @@ def start(config,stats,on_progress,cancel_check,force_cancel_check):
     if engine._check_cancel(cancel_check):
         return engine._cancel_status(force_cancel_check)
     root.mkdir(parents=True,exist_ok=True)
-    checkpoint = engine._checkpoint_path(root)
+    managed = state.get('managed_recovery',False)
+    recovery = files.recovery_directory(root) if managed else root
     with files.task_lock(root):
-        if files.exists(checkpoint) or files.exists(root/files.DATABASE):
+        existing = files.managed_compression(root)
+        checkpoint = (existing or root)/RESUME_FILE_NAME
+        if existing is not None or files.exists(root/RESUME_FILE_NAME) or files.exists(root/files.DATABASE):
             raise ValueError(tr('输出目录已有文件任务，请先恢复：{0}', checkpoint))
+        if managed:
+            state['recovery_folder'] = files.choose_compression_directory(
+                recovery,(row['folder'] for row in entries),started_at)
+        directory = files.compression_directory(root,state) if managed else root
+        checkpoint = directory/RESUME_FILE_NAME
+        if source_root.is_relative_to(root):
+            operations = list(files.steps(root,state))
         for item in operations:
             if files.exists(item.classified) or files.exists(item.copy) or files.exists(item.staged):
                 raise ValueError(tr('分类位置已占用：{0}', item.classified))
@@ -126,20 +187,37 @@ def start(config,stats,on_progress,cancel_check,force_cancel_check):
             if state['output_list'] and (files.exists(listing) or listing.name.casefold() in
                     (item.target.name.casefold(),item.classified.name.casefold())):
                 raise ValueError(tr('文件清单位置已占用：{0}', listing))
+        if state.get('task_delivery'):
+            from sortzip_core.delivery_manifest import choose_task_manifest_name
+            final_ids = set(plan.final_ids)
+            folders = (task.unit.folder for task in plan.tasks if task.unit.unit_id in final_ids)
+            state['delivery_manifest_name'] = choose_task_manifest_name(root,folders,started_at)
+        created_directory = False
         try:
+            if managed:
+                files.ensure_recovery_directory(root)
+                directory.mkdir()
+                created_directory = True
             engine._write_checkpoint(root,state)
-            with files.journal(root,job,create=True) as db:
-                return _continue(root,config,state,db,operations,stats,on_progress,cancel_check,force_cancel_check)
-        except (OSError,ValueError,sqlite3.Error) as error:
-            raise ValueError(tr('文件任务未完成：{0}。断点位置：{1}', error, checkpoint)) from error
+            with files.journal(directory,job,create=True) as db:
+                status = _continue(root,config,state,db,operations,stats,on_progress,cancel_check,force_cancel_check)
+            return _finish(root,checkpoint,status,stats)
+        except (OSError,ValueError,sqlite3.Error,OverflowError) as error:
+            if checkpoint.is_file():
+                stats['recovery_path'] = str(checkpoint)
+            elif created_directory and directory.is_dir() and not any(directory.iterdir()):
+                directory.rmdir()
+                files.remove_empty_recovery(root)
+            raise ValueError(tr('文件任务未完成：{0}\n断点位置：{1}', _journal_issue(error), checkpoint)) from error
 
 
 def resume(config,stats,on_progress,cancel_check,force_cancel_check):
     checkpoint = Path(config['resume_from']).absolute()
-    root = checkpoint.parent.resolve()
-    checkpoint = root/checkpoint.name
+    checkpoint = checkpoint.parent.resolve()/checkpoint.name
+    root = files.recovery_output(checkpoint)
+    directory = checkpoint.parent
     state,operations = read_state(checkpoint)
-    if state['kind']=='multilayer':
+    if state['kind']=='multilayer' and state.get('finished') is not True:
         plan,_,validated = load_resume(checkpoint,config.get('layer_passwords'))
         config = dict(config,archive_tool=validated['archive_tool'])
         try:
@@ -152,11 +230,13 @@ def resume(config,stats,on_progress,cancel_check,force_cancel_check):
         if len(state['completed'])<len(plan.tasks):
             nested_pipeline.preflight_tool(config)
     with files.task_lock(root):
-        latest,_ = read_state(checkpoint)
+        latest,operations = read_state(checkpoint)
         if latest!=state:
             raise ValueError(tr('断点在检查期间发生变化，请重新载入：{0}', checkpoint))
         try:
-            create = not files.exists(root/files.DATABASE)
+            if state.get('finished') is True:
+                return _finish(root,checkpoint,'completed',stats)
+            create = not files.exists(directory/files.DATABASE)
             if create and state['files_ready']:
                 raise ValueError(tr('缺少已产生文件操作的日志'))
             if create:
@@ -165,14 +245,44 @@ def resume(config,stats,on_progress,cancel_check,force_cancel_check):
                     item.original()
                     if any(files.exists(path) for path in (item.classified,item.target,item.copy,item.staged)):
                         raise ValueError(tr('缺少文件日志且输出已有文件：{0}', item.classified))
-            with files.journal(root,state['job'],create=create) as db:
+            with files.journal(directory,state['job'],create=create) as db:
                 if state['files_ready'] and files.phase(db)!='ready':
                     raise ValueError(tr('断点与文件日志阶段不一致'))
                 if input_needed(db,operations):
                     _require_input_approval(config,state)
-                return _continue(root,config,state,db,operations,stats,on_progress,cancel_check,force_cancel_check)
-        except (OSError,ValueError,sqlite3.Error) as error:
-            raise ValueError(tr('文件任务未完成：{0}。断点：{1}', error, checkpoint)) from error
+                status = _continue(root,config,state,db,operations,stats,on_progress,cancel_check,force_cancel_check)
+            return _finish(root,checkpoint,status,stats)
+        except (OSError,ValueError,sqlite3.Error,OverflowError) as error:
+            if checkpoint.is_file():
+                stats['recovery_path'] = str(checkpoint)
+            raise ValueError(tr('文件任务未完成：{0}\n断点位置：{1}', _journal_issue(error), checkpoint)) from error
+
+
+def _finish(root,checkpoint,status,stats):
+    if root==checkpoint.parent:
+        return status
+    if status!='completed':
+        stats['recovery_path'] = str(checkpoint)
+        return status
+    state = json.loads(checkpoint.read_text(encoding='utf-8'))
+    state['finished'] = True
+    engine._write_checkpoint(root,state)
+    try:
+        for suffix in ('-journal','-wal','-shm',''):
+            item = files.safe_path(checkpoint.parent,files.DATABASE+suffix)
+            if files.exists(item):
+                files.identity(item)
+                item.unlink()
+        unexpected = [item for item in checkpoint.parent.iterdir() if item!=checkpoint]
+        if unexpected:
+            raise ValueError(tr('输出位置已被占用：{0}',unexpected[0]))
+        checkpoint.unlink()
+        checkpoint.parent.rmdir()
+        files.remove_empty_recovery(root)
+    except (OSError,ValueError):
+        stats['recovery_path'] = str(checkpoint)
+        print(tr('任务已完成，恢复记录尚未清理：{0}',checkpoint.parent))
+    return status
 
 
 def _require_input_approval(config,state):
@@ -207,7 +317,7 @@ def _continue(root,config,state,db,operations,stats,on_progress,cancel_check,for
         else:
             stats['file_lists'] = 0
         return 'completed'
-    checkpoint = engine._checkpoint_path(root)
+    checkpoint = engine._checkpoint_path(root,state)
     passwords = config.get('layer_passwords') or {}
     if not config.get('resume_from'):
         passwords = {index:layer.password for index,layer in enumerate(nested_pipeline.prepare_layers(config))}

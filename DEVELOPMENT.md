@@ -112,6 +112,8 @@ try {
 
 旧脚本中的模拟数据按当前有效断点结构重新生成，不照搬无效路径或全局修改 Qt 方法的写法。新增测试用局部 patch 和独立素材，避免污染其他用例。
 
+已修复的问题在对应的 `tests/test_*.py` 中保留回归用例。优先用少量临时文件复现，并核对任务结果及输入是否安全。文件编号溢出、恢复日志的中英文提示、上级目录输出冲突及续跑集中在 `test_task_recovery.py`。Bandizip 探测参数在 `test_archive_tools.py` 中覆盖，7-Zip 密码提示及多层解包在 `test_unpack.py` 中覆盖。测试源码随版本提交，临时数据和产物由忽略规则及清理脚本管理。
+
 ## 代码职责与兼容入口
 
 `layer_migration.migrate_legacy` 由主窗口用于统一层 UI 的偏好迁移。输入为已读取的普通配置字典，密码必须来自调用者已加载的凭据，不读取或写入明文设置。它将旧二次打包转换为“第一层旧分组、第二层每组 1 个完整单元”；`{source_range}` 模板保留原文件组序号命名，`{original}` 仍表示本层输入单元范围。中间层旧后缀伪装会返回 notices，不能静默带入新流程。首次使用配置映射为一层。
@@ -142,7 +144,7 @@ main_from_config({
 })
 ```
 
-每层可设 name_template（归档基础名模板，默认 `{original}` 表示本层输入单元序号范围）、password、verify。仅最后一层允许 suffix；这里的 group_size 计数上一层单元而不是分卷文件。各分类子目录分别分组，List.txt 的归档列记录最终外层位置。当前保留全部中间产物，新断点成功后仍保留供核对。
+每层可设 name_template（归档基础名模板，默认 `{original}` 表示本层输入序号范围）、password、verify。仅最后一层允许 suffix。group_size 按上一层压缩包计数，一整套分卷算一个。各分类子目录分别分组，List.txt 的归档列记录最终外层入口。传入 retain_layers 指定要保留的内层，直接调用引擎省略该项时保留全部内层。
 
 | 模块 | 职责 |
 |---|---|
@@ -185,19 +187,25 @@ Get-Content .build-validation\source-smoke.json
 
 成功报告包含 `status: ok`、版本、4 个共享编辑页、单层初始状态、真实后台预览及可用格式。该入口使用临时 INI 和内存凭据，检查窗口、图标和执行计划加载；不能替代文件处理及完整 GUI 回归。
 
+日常打包验证使用以下命令。成功的 EXE 固定保存在 `.build-validation/SortZip-validation.exe`，下次验证通过后在同一位置替换。构建或启动检查失败时保留上一份。测试产物清理脚本保留这个 EXE。
+
+```powershell
+.\scripts\build.ps1 -Validation
+```
+
 构建发布用 EXE：
 
 ```powershell
 .\scripts\build.ps1
 ```
 
-`scripts/build.ps1` 从项目根目录调用 `SortZip.spec`，使用项目版本生成 `release/SortZip-v<版本>.exe` 和对应的 `.sha256`。冻结启动检查通过后才替换同版本成品。报告保存在 `.build-validation/`，临时 EXE 和构建缓存会自动清理。默认使用 `.venv`，也可通过 `-Python` 指定解释器。脚本使用 [PyInstaller](https://pyinstaller.org/en/stable/)打包应用图标和后缀还原脚本，构建时临时收敛 PATH，避免混入其他软件的旧运行库。
+`scripts/build.ps1` 从项目根目录调用 `SortZip.spec`，使用项目版本生成 `release/SortZip-v<版本>.exe` 和对应的 `.sha256`。冻结启动检查通过后才替换同版本成品。报告保存在 `.build-validation/`，构建缓存会自动清理。默认使用 `.venv`，也可通过 `-Python` 指定解释器。脚本使用 [PyInstaller](https://pyinstaller.org/en/stable/)打包应用图标和后缀还原脚本，构建时临时收敛 PATH，避免混入其他软件的旧运行库。
 
 验证冻结后的启动：
 
 ```powershell
 $report = Join-Path (Get-Location) '.build-validation\frozen-smoke.json'
-$process = Start-Process -FilePath '.\release\SortZip-v1.2.5.exe' `
+$process = Start-Process -FilePath '.\release\SortZip-v1.3.0.exe' `
     -ArgumentList @('--smoke-test', ('"' + $report + '"')) `
     -WindowStyle Hidden -Wait -PassThru
 $process.ExitCode
@@ -206,7 +214,7 @@ Get-Content $report
 
 干净环境验收时复制同一份候选 EXE 和校验文件，用 `Get-FileHash -Algorithm SHA256` 确认一致。在该环境中设置 `SORTZIP_SMOKE_TOOL` 为 `missing`、`bandizip`、`7zip` 或 `winrar`。多工具场景把 `SORTZIP_SMOKE_DETECTED` 设为以逗号分隔的工具名，例如 `bandizip,7zip,winrar`，并通过 `SORTZIP_SMOKE_TOOL` 选择本次使用的工具。检查包含旧偏好迁移、分类取消恢复、旧多层断点恢复、后缀还原脚本、分卷逐层解包及 `List.txt` 入口核对。最终发布使用通过验收的同一份产物。
 
-将 `release/` 中验收通过的 EXE 作为附件上传到 GitHub Releases。构建生成的校验文件供本地验收使用。应用和打包共用 `assets/sortzip.ico`，README 使用 `docs/images/sortzip.svg`。
+将验收通过的 Windows x64 EXE 上传到 GitHub Releases。`release/` 下的 EXE 和本地校验文件均由 Git 忽略，Release 只上传 EXE。应用和打包共用 `assets/sortzip.ico`，README 使用 `docs/images/sortzip.svg`。
 
 检查退出码为 0、报告状态为 `ok`。本地环境及临时构建产物均已忽略；验证成功不表示已发布新版本。正常发布前仍需维护 README、CHANGELOG 与内置使用手册，并核对版本对应的实际修改。
 
@@ -259,5 +267,13 @@ Get-Content $report
 - 本轮在 Windows 上分别用 Bandizip、7-Zip 和官方 RAR 7.23 验收临时冻结 EXE。三层加密分卷、清理后继续、实际入口卷清单、后缀还原和原名还原均通过。独立进程恢复另由真实工具集成测试覆盖。
 ## 自动解包
 
-- 包外清单和包内成员清单使用独立版本字段。归档适配器先核对卷哈希、实际格式和成员，再提取单份包内清单。完整成员及大小匹配后才解包并校验哈希。收件端不执行包内脚本。
-- 每个结果目录使用稳定的清单哈希后缀。解包工作区按组记录已校验、已发布状态，并在下游状态落盘后释放已使用内层卷。用同一清单和目标即可恢复。密码和校验值均不进入工作区记录。
+- 正式工作台的新压缩任务将断点、SQLite 日志和归档工作目录集中到输出的 `.sortzip-recovery` 下按开始时间和分类命名的子目录。本机 Windows 按目录身份使用系统互斥锁。锁覆盖压缩、恢复和解包的输出操作，网络共享沿用文件锁。旧断点沿用原位置。
+- Bandizip 和 7-Zip 正式任务使用 `sortzip-task` 总清单。每个外层组包含完整树、成员身份和相对输出路径。解包先验证卷和成员，再按组发布，匹配的现有文件可复用，其余冲突保留。原名映射由发送端选择是否公开。交付口令模式使用 scrypt 和 AES-GCM，清单元数据纳入认证；密码和交付口令均不写入本地恢复记录。
+
+- 兼容路径继续读取旧包外清单和包内成员清单。归档适配器先核对卷哈希、实际格式和成员，再提取单份包内清单。完整成员及大小匹配后才解包并校验哈希。收件端不执行包内脚本。
+- 总清单按来源相对路径发布原文件，旧式独立清单按原来的归档目录布局发布。解包工作区按组记录已校验、已发布状态，并在下游状态落盘后释放已使用内层卷。用同一清单和输出目录继续。密码和校验值均不进入工作区记录。
+
+## 分类发布与对应清单
+
+- 新压缩任务用带所有权标记的任务目录完成分组压缩和校验。断点中的 `publication` 记录发布进度，允许通过文件身份续跑单组中的部分分卷。旧断点没有该字段，按原目录完成。发布验收覆盖已有目标、续跑、按层保留和空目录清理。
+- 分类级后缀还原包保存相对路径及卷哈希。解包可识别交付名与标准名。`List.txt` 采用固定显示宽度、居中及折行，验收脚本按逻辑记录读取新版清单。

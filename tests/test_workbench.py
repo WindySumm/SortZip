@@ -36,7 +36,7 @@ class WorkspacePlanningTests(unittest.TestCase):
         self.assertEqual(result.total_files,3)
         self.assertEqual(len(result.entries),2)
         self.assertEqual(result.prepared['execution_plan'],result.file_plan)
-        self.assertTrue(all(row['archive'].startswith('layer-1/文档/') for row in result.file_plan))
+        self.assertTrue(all(row['archive'].startswith('文档/') for row in result.file_plan))
         self.assertEqual(before,list(self.root.rglob('*')))
 
     def test_structure_survives_unconfirmed_password(self):
@@ -197,6 +197,167 @@ class WorkbenchTests(unittest.TestCase):
             time.sleep(.005)
         self.assertTrue(predicate(),'timed out')
 
+    def test_retention_disclosure_caps_height_and_stays_inspectable(self):
+        from PySide6.QtCore import Qt
+        from sortzip_core.i18n import tr
+        w = self.window
+        w.navigate('final')
+        w.retention_shortcuts.itemAt(0).widget().click()
+        self.assertTrue(w.retention_toggle.isHidden())
+        self.assertFalse(w.retention_scroll.isHidden())
+        for count in (2,5,6,20):
+            with self.subTest(count=count):
+                while len(w.state.layers)<count:
+                    w.add_layer()
+                w.navigate('final')
+                self.assertTrue(w.retention_scroll.isHidden())
+                w.retention_toggle.click()
+                _application.processEvents()
+                self.assertEqual(w.retention_layout.count(),count)
+                self.assertEqual(w.retention_toggle.text(),tr('归档 · 保留 {0} / {1} 层',1,count))
+                scroll = w.retention_scroll
+                bar = scroll.verticalScrollBar()
+                self.assertEqual(scroll.verticalScrollBarPolicy(),Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+                self.assertEqual(bar.maximum()>0,count>5)
+                if count==5:
+                    five_row_height = scroll.height()
+                elif count>5:
+                    self.assertEqual(scroll.height(),five_row_height)
+                    bar.setValue(bar.maximum())
+                    row = w.retention_layout.itemAt(count-1).widget()
+                    self.assertLessEqual(row.mapTo(scroll.viewport(),row.rect().bottomLeft()).y(),scroll.viewport().height())
+                w.navigate('mapping')
+                w.navigate('final')
+                self.assertTrue(w.retention_toggle.isChecked())
+                self.assertFalse(scroll.isHidden())
+                w.retention_toggle.click()
+
+        w.retention_toggle.click()
+        checkbox = w._retention_checkboxes[0]
+        checkbox.click()
+        self.assertIs(checkbox,w._retention_checkboxes[0])
+        self.assertEqual(w.retention_toggle.text(),tr('归档 · 保留 {0} / {1} 层',2,20))
+        with patch.object(w.controller,'busy',return_value=True):
+            w._set_task_active(True)
+            self.assertTrue(w.retention_toggle.isEnabled())
+            w.retention_toggle.click()
+            w.retention_toggle.click()
+            self.assertFalse(checkbox.isEnabled())
+            self.assertFalse(w.keep.isEnabled())
+            self.assertFalse(w.output_list.isEnabled())
+        w._set_task_active(False)
+        w.compression_cb.click()
+        self.assertTrue(w.retention_toggle.isHidden())
+        self.assertTrue(w.retention_scroll.isHidden())
+        self.assertTrue(w.keep.isVisible())
+
+    def test_delivery_password_dialog_default_and_popup_escape(self):
+        from PySide6.QtCore import Qt,QTimer
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QDialogButtonBox
+        from sortzip_core.workbench_controls import QuietFocusComboBox
+        w = self.window
+        def interact(accept):
+            dialog = _application.activeModalWidget()
+            try:
+                combo = dialog.findChild(QuietFocusComboBox)
+                self.assertEqual(combo.currentData(),'none')
+                self.assertTrue(combo.property('softHover'))
+                self.assertGreaterEqual(combo.width()-36,max(
+                    combo.fontMetrics().horizontalAdvance(combo.itemText(i)) for i in range(combo.count())))
+                if accept:
+                    combo.setFocus(Qt.FocusReason.TabFocusReason)
+                    combo.showPopup()
+                    QTest.keyClick(combo.view(),Qt.Key_Escape)
+                    self.assertTrue(dialog.isVisible())
+                    self.assertFalse(combo.view().isVisible())
+                    QTest.keyClick(combo,Qt.Key_Down)
+                    self.assertEqual(combo.currentData(),'encrypted')
+                    buttons = dialog.findChild(QDialogButtonBox)
+                    ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+                    ok.setFocus()
+                    QTest.keyClick(ok,Qt.Key_Return)
+                else:
+                    QTest.keyClick(dialog,Qt.Key_Escape)
+            except Exception as error:
+                errors.append(error)
+            finally:
+                if dialog.isVisible():
+                    dialog.reject()
+        for language in ('zh','en'):
+            with patch('sortzip_core.i18n._language',language):
+                for accept,expected in ((True,'encrypted'),(False,None)):
+                    errors = []
+                    QTimer.singleShot(0,lambda:interact(accept))
+                    result = w._choose_delivery_password_mode()
+                    if errors:
+                        raise errors[0]
+                    self.assertEqual(result,expected)
+
+    def test_delivery_passphrase_prompt_uses_its_own_labels_and_validation(self):
+        from PySide6.QtTest import QSignalSpy
+        from PySide6.QtWidgets import QDialog,QFormLayout
+        from sortzip_core.i18n import tr
+        from sortzip_core.widgets import PasswordDialog
+        w = self.window
+
+        def enter_phrase(dialog):
+            form = dialog.findChild(QFormLayout)
+            self.assertEqual(dialog.windowTitle(),tr('输入交付口令'))
+            self.assertEqual(form.labelForField(dialog.password_edit).text(),tr('交付口令:'))
+            self.assertEqual(form.labelForField(dialog.confirm_edit).text(),tr('确认口令:'))
+            self.assertEqual(dialog.password_edit.placeholderText(),tr('至少 12 个字符'))
+            accepted = QSignalSpy(dialog.accepted)
+            with patch('sortzip_core.widgets.show_styled_dialog') as error:
+                for value in ('','a'*11,'a'*1025):
+                    dialog.password_edit.setText(value)
+                    dialog.confirm_edit.setText(value)
+                    dialog._on_ok()
+                    self.assertEqual(error.call_args.args[2],tr('交付口令长度应为 12 至 1024 个字符。'))
+                dialog.password_edit.setText('a'*12)
+                dialog.confirm_edit.setText('b'*12)
+                dialog._on_ok()
+                self.assertEqual(error.call_args.args[2],tr('两次输入的交付口令不一致。'))
+                self.assertEqual(accepted.count(),0)
+            dialog.confirm_edit.setText(dialog.password())
+            dialog._on_ok()
+            self.assertEqual(accepted.count(),1)
+            return dialog.result()
+
+        for language in ('zh','en'):
+            with patch('sortzip_core.i18n._language',language),patch.object(PasswordDialog,'exec',enter_phrase):
+                self.assertEqual(w._delivery_phrase(),'a'*12)
+        with patch.object(PasswordDialog,'exec',return_value=QDialog.DialogCode.Rejected):
+            self.assertIsNone(w._delivery_phrase())
+        archive = PasswordDialog(w,initial='a'*8)
+        self.assertEqual(archive.windowTitle(),tr('输入压缩密码'))
+        archive._on_ok()
+        self.assertEqual(archive.result(),QDialog.DialogCode.Accepted)
+
+    def test_delivery_password_modes_submit_only_after_confirmation(self):
+        w = self.window
+        prepared = dict(delivery_manifest=True,archive_tool='7zip',
+                        compression_layers=[Layer(1,'7z',password='layer password')])
+        for mode,phrase,confirmed,submit in (
+                (None,None,False,False),('none',None,False,True),
+                ('encrypted',None,False,False),('encrypted','delivery phrase',False,True),
+                ('plain',None,False,False),('plain',None,True,True)):
+            with self.subTest(mode=mode,submit=submit), \
+                    patch.object(w,'_build_config',return_value=dict(prepared)), \
+                    patch.object(w,'_choose_delivery_password_mode',return_value=mode) as choose, \
+                    patch.object(w,'_delivery_phrase',return_value=phrase) as ask, \
+                    patch.object(w,'_confirm_resume',return_value=confirmed) as confirm, \
+                    patch.object(w.controller,'execute') as execute:
+                w._run()
+                choose.assert_called_once()
+                self.assertEqual(ask.call_count,int(mode=='encrypted'))
+                self.assertEqual(confirm.call_count,int(mode=='plain'))
+                self.assertEqual(execute.call_count,int(submit))
+                if submit:
+                    config = execute.call_args.args[0]
+                    self.assertEqual(config.get('delivery_password_mode','none'),mode)
+                    self.assertEqual(config.get('delivery_phrase'),phrase)
+
     def test_unpack_menu_runs_password_prompt_on_main_thread(self):
         from PySide6.QtCore import QThread
         from PySide6.QtWidgets import QInputDialog
@@ -214,25 +375,32 @@ class WorkbenchTests(unittest.TestCase):
                 'sortzip_core.unpack.run',side_effect=run),patch.object(
                 QInputDialog,'getText',return_value=('typed once',True)) as dialog:
             w.commands['unpack'].trigger()
+            self.assertFalse(w.run_btn.isVisible())
+            self.assertTrue(w.cancel_btn.isVisible())
             self.wait(lambda:bool(self.results))
             dialog.assert_called_once()
             self.assertIn('7-Zip',dialog.call_args.args[2])
         self.assertEqual(self.results[0][1]['status'],'completed')
+        self.assertTrue(w.run_btn.isVisible())
+        self.assertFalse(w.cancel_btn.isVisible())
 
     def test_unpack_dialog_opens_before_browsing_and_validates_required_fields(self):
-        from PySide6.QtWidgets import QDialog,QDialogButtonBox,QFileDialog,QLabel,QPushButton
-        from sortzip_core.delivery_manifest import describe,write_new
+        from PySide6.QtWidgets import QComboBox,QDialog,QDialogButtonBox,QFileDialog,QLabel,QPushButton
+        from sortzip_core.delivery_manifest import describe,write_new,write_outer
+        from sortzip_core.ui_controls import StateCheckBox
         from sortzip_core.unpack_dialog import choose_task
 
         missing = self.root/'damaged.sortzip.json'
         missing.write_text('{}',encoding='utf-8')
         archive = self.root/'sample.zip'
         archive.write_bytes(b'sample')
-        paths = [self.root/f'{label}.sortzip.json' for label in ('first','second')]
-        for path in paths:
-            write_new(path,dict(schema=1,tool='bandizip',format='zip',stem='sample',entry=archive.name,
-                                encrypted=False,suffix=None,volumes=[describe(archive)]))
-        selections = [([str(missing)],''),(list(map(str,paths)),''),([], '')]
+        paths = [self.root/f'{label}.sortzip.json' for label in ('first','second','single','old')]
+        data = dict(schema=1,tool='bandizip',format='zip',stem='sample',entry=archive.name,
+                    encrypted=False,suffix=None,volumes=[describe(archive)])
+        for path,count in zip(paths,(3,2,1)):
+            write_outer(path,data,count)
+        write_new(paths[-1],data)
+        selections = [([str(missing)],''),(list(map(str,paths)),''),([], ''), (list(map(str,paths)), '')]
         with patch.object(QFileDialog,'getOpenFileNames',side_effect=selections) as files,patch.object(
                 QFileDialog,'getExistingDirectory',return_value=str(self.root)) as directory:
             def exercise(dialog):
@@ -249,16 +417,46 @@ class WorkbenchTests(unittest.TestCase):
                 self.assertTrue(any(str(missing) in label.text() for label in dialog.findChildren(QLabel)))
                 browse[0].click()
                 self.assertTrue(begin.isEnabled())
+                selector = dialog.findChild(QComboBox)
+                def visible_boxes():
+                    return {box.text():box for box in dialog.findChildren(StateCheckBox) if box.isVisibleTo(dialog)}
+                def click_button(text):
+                    next(btn for btn in dialog.findChildren(QPushButton) if btn.text()==text
+                         and btn.isVisibleTo(dialog)).click()
+                visible_boxes()['第 2 层'].click()
+                selector.setCurrentIndex(1)
+                self.assertNotIn('第 2 层',visible_boxes())
+                click_button('保留全部内层')
+                click_button('全部清除')
+                self.assertFalse(visible_boxes()['第 1 层'].isChecked())
+                click_button('保留全部内层')
+                selector.setCurrentIndex(2)
+                self.assertNotIn('第 1 层',visible_boxes())
+                selector.setCurrentIndex(3)
+                visible_boxes()['保留内层归档'].click()
+                selector.setCurrentIndex(0)
+                self.assertTrue(visible_boxes()['第 2 层'].isChecked())
                 browse[0].click()
                 self.assertTrue(begin.isEnabled())
+                paths[0].unlink()
+                write_outer(paths[0],data,4)
+                begin.click()
+                self.assertFalse(begin.isEnabled())
+                self.assertTrue(any('清单已更改' in label.text() for label in dialog.findChildren(QLabel)))
+                browse[0].click()
+                visible_boxes()['第 2 层'].click()
+                selector.setCurrentIndex(1)
+                visible_boxes()['第 1 层'].click()
+                selector.setCurrentIndex(3)
+                visible_boxes()['保留内层归档'].click()
                 begin.click()
                 return dialog.result()
             with patch.object(QDialog,'exec',exercise):
                 config = choose_task(self.window,str(self.root))
         self.assertTrue(config['unpack_original'])
-        self.assertFalse(config['unpack_keep'])
         self.assertEqual(config['unpack_passwords'],[])
         self.assertEqual(config['unpack_manifests'],list(map(str,paths)))
+        self.assertEqual(config['unpack_retention'],dict(zip(map(str,paths),([2],[1],[],True))))
         self.assertEqual(config['dest'],str(self.root))
 
     def dispose(self):
@@ -882,14 +1080,19 @@ class WorkbenchTests(unittest.TestCase):
             self.assertFalse(w.source.isEnabled())
             self.assertFalse(w.mapping_page.isEnabled())
             self.assertFalse(w.run_btn.isEnabled())
+            self.assertFalse(w.run_btn.isVisible())
+            self.assertTrue(w.cancel_btn.isVisible())
             w.navigate(w.state.layers[0].key)
             self.assertFalse(w.layer_editor.isEnabled())
             self.assertTrue(w.navigation.isEnabled())
+            self.assertFalse(w.run_btn.isVisible())
             self.assertEqual(len(snapshots),1)
             self.assertEqual(snapshots[0]['compression_layers'][0].group_size,1)
             release.set()
             self.wait(lambda:bool(self.results))
         self.assertTrue(w.run_btn.isEnabled())
+        self.assertTrue(w.run_btn.isVisible())
+        self.assertFalse(w.cancel_btn.isVisible())
         self.assertIsNone(w.controller.thread)
 
     def test_confirmation_and_worker_share_frozen_snapshot(self):
@@ -917,6 +1120,8 @@ class WorkbenchTests(unittest.TestCase):
             self.wait(lambda:bool(self.errors))
         self.assertFalse(w.controller.busy())
         self.assertTrue(w.run_btn.isEnabled())
+        self.assertTrue(w.run_btn.isVisible())
+        self.assertFalse(w.cancel_btn.isVisible())
         entered,release = Event(),Event()
         def execute(config,**kwargs):
             entered.set()
@@ -948,10 +1153,75 @@ class WorkbenchTests(unittest.TestCase):
 
     def test_cancel_preflight_does_not_create_output(self):
         self.task()
-        self.window._run()
-        self.window.controller.cancel()
-        self.wait(lambda:not self.window.controller.busy())
+        w = self.window
+        w.run_btn.click()
+        self.assertFalse(w.run_btn.isVisible())
+        self.assertTrue(w.cancel_btn.isVisible())
+        with patch.object(w.controller,'cancel',wraps=w.controller.cancel) as cancel:
+            w.cancel_btn.click()
+            w.cancel_btn.click()
+            w.commands['cancel'].trigger()
+            cancel.assert_called_once_with()
+        self.assertEqual(w.cancel_btn.text(),'正在取消…')
+        self.assertFalse(w.cancel_btn.isEnabled())
+        self.wait(lambda:not w.controller.busy())
+        self.assertTrue(w.run_btn.isVisible())
+        self.assertFalse(w.cancel_btn.isVisible())
+        self.assertEqual(w.cancel_btn.text(),'取消')
+        self.assertIsNone(w._cancel_dlg)
         self.assertFalse((self.root/'out').exists())
+
+    def test_rejecting_execution_confirmation_restores_start_button(self):
+        self.task()
+        w = self.window
+        with patch.object(w,'_confirm_config',return_value=False) as confirm, \
+                patch.object(w.controller,'factory',wraps=w.controller.factory) as factory:
+            w.run_btn.click()
+            self.assertFalse(w.run_btn.isVisible())
+            self.assertTrue(w.cancel_btn.isVisible())
+            self.wait(lambda:not w.controller.busy())
+            confirm.assert_called_once()
+            factory.assert_not_called()
+        self.assertTrue(w.run_btn.isVisible())
+        self.assertFalse(w.cancel_btn.isVisible())
+
+    def test_running_cancel_waits_and_force_remains_available(self):
+        from PySide6.QtWidgets import QPushButton
+        self.task()
+        w = self.window
+        entered,release = Event(),Event()
+        cancellations = []
+
+        def execute(config,cancel_check,force_cancel_check,**kwargs):
+            entered.set()
+            release.wait(6)
+            cancellations.append((cancel_check(),force_cancel_check()))
+            return 'force_cancelled' if force_cancel_check() else 'safe_cancelled'
+
+        self.addCleanup(release.set)
+        with patch('sortzip_core.tasks.main_from_config',side_effect=execute), \
+                patch.object(w.controller,'cancel',wraps=w.controller.cancel) as cancel:
+            w.run_btn.click()
+            self.wait(entered.is_set)
+            w.cancel_btn.click()
+            w.commands['cancel'].trigger()
+            self.wait(lambda:w._cancel_dlg is not None)
+            self.assertFalse(w.run_btn.isVisible())
+            self.assertTrue(w.cancel_btn.isVisible())
+            self.assertFalse(w.cancel_btn.isEnabled())
+            self.assertEqual(w.cancel_btn.text(),'正在取消…')
+            cancel.assert_called_once_with()
+            force = next(button for button in w._cancel_dlg.findChildren(QPushButton)
+                         if button.text()=='强制中断')
+            force.click()
+            self.assertEqual(cancel.call_count,2)
+            self.assertEqual(cancel.call_args.kwargs,{'force':True})
+            release.set()
+            self.wait(lambda:bool(self.results))
+        self.assertEqual(cancellations,[(True,True)])
+        self.assertEqual(self.results[0][1]['status'],'force_cancelled')
+        self.assertTrue(w.run_btn.isVisible())
+        self.assertFalse(w.cancel_btn.isVisible())
 
     def test_log_masks_all_layer_passwords_and_error_not_100_percent(self):
         w = self.window
@@ -1111,10 +1381,14 @@ class WorkbenchTests(unittest.TestCase):
         checkpoint.write_text('{bad json')
         with patch('sortzip_core.workbench.PasswordDialog') as password,patch.object(self.window.controller,'factory') as factory:
             self.window._start_resume(str(checkpoint))
+            self.assertFalse(self.window.run_btn.isVisible())
+            self.assertTrue(self.window.cancel_btn.isVisible())
             self.wait(lambda:not self.window.controller.busy())
         password.assert_not_called()
         factory.assert_not_called()
         self.assertTrue(self.errors)
+        self.assertTrue(self.window.run_btn.isVisible())
+        self.assertFalse(self.window.cancel_btn.isVisible())
 
     def test_failed_task_preserves_progress_and_releases_thread_before_report(self):
         self.task()
@@ -1160,20 +1434,28 @@ class WorkbenchTests(unittest.TestCase):
         w.layer_editor.suffix.setText('.png')
         w.output_list.setChecked(True)
         self.assertIn('List.txt',w.output_list.toolTip())
-        w._run()
-        self.wait(lambda:bool(self.results),30)
-        self.assertEqual(self.results[0][1]['status'],'completed',self.errors)
+        from sortzip_core import file_journal, task_recovery
+        finish = task_recovery._finish
+        def pause_before_cleanup(root,checkpoint,status,stats):
+            self.assertEqual(status,'completed')
+            return finish(root,checkpoint,'safe_cancelled',stats)
+        with patch.object(task_recovery,'_finish',side_effect=pause_before_cleanup):
+            w._run()
+            self.wait(lambda:bool(self.results),30)
+        self.assertEqual(self.results[0][1]['status'],'safe_cancelled',self.errors)
         self.assertEqual(self.results[0][0]['file_lists'],1)
-        checkpoint = self.root/'out'/'.sortzip_resume.json'
+        from sortzip_core import engine
+        checkpoint = engine._checkpoint_path(self.root/'out')
+        self.assertIn('文档',checkpoint.parent.name)
         result = inspect_resume(dict(resume_from=str(checkpoint)),0)
         self.assertFalse(result.error)
         self.assertEqual(result.completed,3)
         import zipfile
-        archives = list((self.root/'out'/'layer-2').rglob('*.png'))
+        archives = list((self.root/'out'/'文档').rglob('*.png'))
         self.assertEqual(len(archives),1)
         with zipfile.ZipFile(archives[0]) as outer:
             self.assertEqual(len(outer.namelist()),2)
-        self.assertTrue(list((self.root/'out'/'layer-2').rglob('Restore-Archive-Names')))
+        self.assertTrue((self.root/'out'/'文档'/'还原压缩包后缀.cmd').is_file())
         saved = w.state
         w.toggle_theme()
         history_count = w.structure_history.stack.count()
@@ -1194,3 +1476,5 @@ class WorkbenchTests(unittest.TestCase):
         self.assertEqual(len(w.state.layers),1)
         self.assertEqual(self.results[-1][1]['status'],'completed')
         self.assertEqual(self.results[-1][0]['file_lists'],1)
+        self.assertFalse(checkpoint.parent.exists())
+        self.assertFalse((self.root/'out'/'.sortzip_resume.json').exists())

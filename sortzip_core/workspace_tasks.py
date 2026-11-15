@@ -103,11 +103,11 @@ class TaskController(QObject):
         self._pending = None
         self.destination = config.get('dest','')
         if not self.destination and config.get('resume_from'):
-            self.destination = str(Path(config['resume_from']).resolve().parent)
-        self._secrets = [str(value) for value in [config.get('password',''),*config.get('layer_passwords',{}).values(),
+            from sortzip_core.file_journal import recovery_output
+            self.destination = str(recovery_output(Path(config['resume_from']).resolve()))
+        self._secrets = [str(value) for value in [config.get('password',''),
+            *config.get('layer_passwords',{}).values(),
             *(layer.password for layer in config.get('compression_layers',()))] if value]
-        if not already_active:
-            self.active.emit(True)
         try:
             self.thread,self.worker = self.factory(config)
             self.thread.setParent(self)
@@ -119,6 +119,8 @@ class TaskController(QObject):
             self.worker.cancel_waiting.connect(self.cancel_waiting)
             if 'unpack_manifests' in config:
                 self.worker.unpack_password_requested.connect(self.unpack_password_requested)
+            if not already_active:
+                self.active.emit(True)
             self.thread.start()
             return True
         except Exception:

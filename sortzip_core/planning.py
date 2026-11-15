@@ -64,7 +64,8 @@ def build_execution_plan(config, *, sources=None,inventory=None,context=None):
     mappings = config.get('custom_names')
     for source in sorted(iterator, key=lambda p: p.relative_to(root).as_posix().casefold()):
         if context: context.check()
-        if ((records is None and not source.is_file()) or is_task_artifact(source.name)
+        if ((records is None and not source.is_file())
+                or any(is_task_artifact(part) for part in source.relative_to(root).parts)
                 or (dest.is_relative_to(root) and source.is_relative_to(dest))):
             continue
         category = (mappings.get(source.suffix.lower()) if mappings is not None

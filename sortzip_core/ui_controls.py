@@ -83,8 +83,11 @@ class StepSpinBox(QSpinBox):
         self.minus = QToolButton(self)
         self.plus = QToolButton(self)
         for button,text,name,step in ((self.minus,'−',tr('减少数量'),-1),(self.plus,'+',tr('增加数量'),1)):
+            button.setObjectName('SpinStep')
             button.setText(text)
             button.setAccessibleName(name)
+            button.setToolTip(name)
+            button.setAutoRaise(True)
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.setAutoRepeat(True)
             button.clicked.connect(lambda checked=False,delta=step:self.stepBy(delta))
@@ -186,7 +189,7 @@ class CompactFieldRow(QWidget):
     def refresh_metrics(self):
         metrics = self.count_label.fontMetrics()
         self.count_label.setFixedWidth(max(90,metrics.horizontalAdvance(tr('每包文件数'))+2,
-                                           metrics.horizontalAdvance(tr('每包单元数'))+2))
+                                           metrics.horizontalAdvance(tr('每包压缩包数'))+2))
         self.format_label.setFixedWidth(max(64,self.format_label.sizeHint().width()))
         self._reflow()
 

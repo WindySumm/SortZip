@@ -1,7 +1,7 @@
 """Production-only presentation and shared commands for the flow workbench."""
 from PySide6.QtCore import Qt,QSize,QPointF
 from PySide6.QtGui import QAction,QIcon,QPixmap,QPainter,QPen,QColor,QPainterPath
-from PySide6.QtWidgets import QWidget,QHBoxLayout,QToolButton,QMenu,QPushButton,QLineEdit,QProgressBar
+from PySide6.QtWidgets import QWidget,QHBoxLayout,QStackedLayout,QToolButton,QMenu,QPushButton,QLineEdit,QProgressBar
 from sortzip_core import __version__
 from sortzip_core.widgets import show_manual_dialog,DropResumeButton
 from sortzip_core.i18n import tr
@@ -188,13 +188,15 @@ class WorkbenchPolishMixin:
         self.footer.addWidget(self.progress_bar,1)
         self.progress_bar.setVisible(False)
         policy = self.progress_bar.sizePolicy(); policy.setRetainSizeWhenHidden(True); self.progress_bar.setSizePolicy(policy)
-        self.footer.addWidget(self.cancel_btn)
-        self.footer.addWidget(self.run_btn)
+        self.task_buttons = QStackedLayout()
+        self.footer.addLayout(self.task_buttons)
+        self.task_buttons.addWidget(self.run_btn)
+        self.task_buttons.addWidget(self.cancel_btn)
         for key,button,callback in (('run',self.run_btn,self._run),('cancel',self.cancel_btn,self._cancel)):
             action = self._command(key,button.text(),callback)
             button.clicked.connect(action.trigger)
-        self.cancel_btn.setVisible(False)
-        self.run_btn.setMinimumHeight(32)
+            button.setMinimumHeight(32)
+        self.commands['cancel'].setEnabled(False)
 
     def _sync_action_states(self,*args):
         if not getattr(self,'_polished',False): return
@@ -210,9 +212,6 @@ class WorkbenchPolishMixin:
         self.commands['map_remove'].setEnabled(not busy and self.mapping_table.currentRow()>=0)
         self.commands['rule_remove'].setEnabled(not busy and self.naming.table.currentRow()>=0)
         self.commands['rule_clear'].setEnabled(not busy and self.naming.table.rowCount()>0)
-        self.commands['run'].setEnabled(not busy)
-        self.commands['cancel'].setEnabled(busy and self.cancel_btn.isEnabled())
-        self.cancel_btn.setVisible(busy)
         self.progress_bar.setVisible(busy or self.progress_bar.value()>0)
         if busy: self.review_btn.setEnabled(False)
         if hasattr(self,'structure_history') and 'undo' in self.commands:
@@ -238,6 +237,9 @@ class WorkbenchPolishMixin:
             QTableWidget,QTreeWidget,QTextEdit {{border:1px solid {border};border-radius:5px;}}
             QToolButton,QPushButton#QuietAction {{background:transparent;border:0;border-radius:5px;padding:4px 6px;}}
             QToolButton:hover,QPushButton#QuietAction:hover {{background:{'#2a4059' if dark else '#e9edf2'};}}
+            QPushButton#RetentionSummary {{background:{'#273544' if dark else '#f3f6f9'};border:0;text-align:left;padding:7px 26px 7px 8px;}}
+            QPushButton#RetentionSummary:hover,QPushButton#RetentionSummary:focus {{background:{'#2a4059' if dark else '#e9edf2'};}}
+            QPushButton#RetentionSummary QLabel {{background:transparent;}}
             QToolButton:checked {{background:{'#2a4059' if dark else '#e7f1ff'};}}
             QToolButton::menu-indicator {{image:none;width:0;height:0;}}
             QToolButton:disabled {{color:{'#78889a' if dark else '#9aa2ac'};}}

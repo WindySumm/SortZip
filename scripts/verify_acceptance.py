@@ -1,6 +1,5 @@
 """Read completed sandbox checkpoints and unpack every layer with real Bandizip."""
 import argparse
-import csv
 import hashlib
 import json
 import shutil
@@ -8,6 +7,10 @@ import subprocess
 import uuid
 import sys
 from pathlib import Path
+
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+
+from sortzip_core.nested_pipeline import list_rows
 
 
 def require(condition,message):
@@ -29,7 +32,9 @@ def main():
     options = parser.parse_args()
     root,source = options.output.resolve(),options.source.resolve()
     state = json.loads((root/'.sortzip_resume.json').read_text(encoding='utf-8'))
-    require(state.get('schema')==2 and state.get('kind')=='multilayer','expected a multilayer sandbox checkpoint')
+    require(state.get('schema') in (2,3,4,5) and state.get('kind')=='multilayer',
+            'expected a multilayer sandbox checkpoint')
+    require(state.get('archive_tool','bandizip')=='bandizip','expected a Bandizip task')
     bandizip = shutil.which('bz')
     require(bandizip is not None,'Bandizip bz was not found on PATH')
     scratch = root.parent/('unpack-'+uuid.uuid4().hex[:8])
@@ -66,9 +71,7 @@ def main():
     require(lists,'missing file correspondence lists')
     entries = []
     for path in lists:
-        with path.open(encoding='utf-8-sig',newline='') as stream:
-            entries.extend((row['原文件名'],row['新文件名'],row['所属压缩包名'])
-                for row in csv.DictReader(stream,delimiter='\t'))
+        entries.extend((row['原文件名'],row['新文件名'],row['所属压缩包名']) for row in list_rows(path))
     expected_entries = []
     for identity in state['final_ids']:
         record = state['completed'][identity]

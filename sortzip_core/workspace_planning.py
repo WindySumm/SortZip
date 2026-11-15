@@ -45,7 +45,8 @@ def _build_workspace_preview(config,revision,cancelled,strict):
             iterator = root.rglob('*') if config.get('recursive') else root.iterdir()
             for source in iterator:
                 if cancelled(): return None
-                if source.is_file() and not is_task_artifact(source.name):
+                if (source.is_file() and not any(is_task_artifact(part)
+                        for part in source.relative_to(root).parts)):
                     info = source.stat()
                     inventory.append(SourceRecord(source,info.st_size,info.st_mtime_ns))
             inventory = tuple(inventory)
@@ -66,6 +67,9 @@ def _build_workspace_preview(config,revision,cancelled,strict):
             validate_plan_paths(result.file_plan,config,context=context)
         else:
             result.file_plan = build_execution_plan(config,inventory=files,context=context)
+        if not strict and destination is not None and destination!=root and root.is_relative_to(destination):
+            from sortzip_core.file_journal import validate_parent_output
+            validate_parent_output(destination,root,result.file_plan,config.get('output_list'),context=context)
         result.file_base = result.file_plan
         result.entries = [dict(source=row['source_rel'],folder=row['folder'],target=row['target_name'],
             classified=row['classified_name']) for row in result.file_plan]
@@ -139,13 +143,17 @@ def inspect_resume(config,revision,cancelled=lambda:False,strict=False):
         if header.get('schema') in (4,5):
             from sortzip_core import file_journal, task_recovery
             state,operations = task_recovery.read_state(Path(result.path),state=header)
-            root = Path(result.path).parent
+            directory = Path(result.path).parent
+            root = file_journal.recovery_output(Path(result.path))
             recorded = {}
-            if not file_journal.exists(root/file_journal.DATABASE) and not state['files_ready']:
+            if state.get('finished') is True:
+                result.kind = 'cleanup'
+                return result
+            if not file_journal.exists(directory/file_journal.DATABASE) and not state['files_ready']:
                 result.input_root = state['input_root']
             else:
                 try:
-                    with file_journal.journal(root,state['job'],readonly=True) as db:
+                    with file_journal.journal(directory,state['job'],readonly=True) as db:
                         if task_recovery.input_needed(db,operations):
                             result.input_root = state['input_root']
                         recorded = dict(db.execute('SELECT id,step FROM operations'))
@@ -176,7 +184,7 @@ def inspect_resume(config,revision,cancelled=lambda:False,strict=False):
             result.plan,result.available,state = load_resume(result.path,inspect_only=True)
             result.kind = 'multilayer'
             result.config = {key:state[key] for key in ('keep_files','retain_layers','restore_original_names','output_list',
-                             'delivery_manifest','delivery_original_names')
+                             'delivery_manifest','delivery_original_names','delivery_password_mode')
                              if key in state}
             total = len(result.plan.tasks)
             result.archive_tool = state['archive_tool']
@@ -184,9 +192,10 @@ def inspect_resume(config,revision,cancelled=lambda:False,strict=False):
             from sortzip_core import retention
             if state['schema']==retention.SCHEMA:
                 result.preserved_units = len(retention.unverified_cleanup(result.plan,state))
-            result.space_report = disk_space.resume_report(Path(result.path).parent,result.plan,result.available,state,copies=copies)
+            from sortzip_core.file_journal import recovery_output
+            result.space_report = disk_space.resume_report(recovery_output(Path(result.path)),result.plan,result.available,state,copies=copies)
             pending = {row['layer'] for row in state['tasks'] if row['settings']['password_required']
-                       and row['unit_id'] not in state['completed']}
+                       and (row['unit_id'] not in state['completed'] or state.get('delivery_password_mode','none')!='none')}
             result.encrypted_layers = tuple(sorted(pending))
             if state['schema']<4:
                 observed = {row['layer'] for row in state['completed'].values()}

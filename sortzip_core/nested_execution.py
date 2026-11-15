@@ -14,7 +14,7 @@ from sortzip_core.i18n import tr
 from sortzip_core.disk_space import archive_estimate, check_write
 from sortzip_core import file_journal, retention
 from sortzip_core.restore_bundle import write_bundle
-from sortzip_core import archive_members, delivery_manifest
+from sortzip_core import archive_members, archive_publication, delivery_manifest
 
 
 @dataclass
@@ -79,12 +79,19 @@ def execute_plan(plan, inputs, destination, bandizip='bz', cancel_check=None,
     if _resume_state is None and engine._checkpoint_path(root).exists():
         raise ValueError(tr('输出已有恢复任务，不能覆盖'))
     available = dict(inputs)
+    source = Path(_resume_state['input_root']) if _resume_state and 'input_root' in _resume_state else None
+    parent_output = source is not None and source.is_relative_to(root)
     records = dict(_resume_state['completed']) if _resume_state is not None else {}
     folders, planned_paths = {}, set()
+    work = (archive_publication.staging(root,_resume_state) if _resume_state and 'publication' in _resume_state else root)
+    if work!=root:
+        archive_publication.prepare_staging(root,_resume_state)
     for task in plan.tasks:
         if validate_win_folder_name(task.archive_stem) or type(task.layer_index) is not int or task.layer_index < 0:
             raise ValueError(tr('无效的层计划'))
-        folder = root/f'layer-{task.layer_index+1}'/task.unit.folder/task.archive_stem
+        folder = archive_publication.work_folder(root,task,_resume_state)
+        if work!=root:
+            archive_publication.checked_path(root,source,folder.relative_to(root))
         if not folder.resolve().is_relative_to(root) or folder.is_symlink():
             raise ValueError(tr('压缩输出目录越界或已占用'))
         key = str(folder.resolve()).casefold()
@@ -132,20 +139,26 @@ def execute_plan(plan, inputs, destination, bandizip='bz', cancel_check=None,
             warning = check_write(folder,archive_estimate([value[0] for value in before.values()]),stage,estimate=True)
             if warning and on_space_warning:
                 on_space_warning(index,len(plan.tasks),warning)
+            if parent_output or work!=root:
+                file_journal.safe_path(root,folder.relative_to(root).as_posix())
+                file_journal.check_output_outside_input(root,source,folder)
             folder.mkdir(parents=True)
             members = list(before)
+            delivery_members = None
             if (restore_names and not task.layer_index) or delivery_enabled:
                 with TemporaryDirectory(prefix='.sortzip-restore-',dir=folder) as temporary:
                     if restore_names and not task.layer_index:
                         kit = write_bundle(Path(temporary)/'payload',[
                             (available[child].files[0],Path(original).name,file_rows[original]['sha256'])
-                            for child,original in zip(task.input_ids,task.unit.original_ids,strict=True)],embedded=True)
+                            for child,original in zip(task.input_ids,task.unit.original_ids,strict=True)],
+                            embedded=True,language=data.get('script_language'))
                         members.extend(str(path) for path in sorted(kit.iterdir()))
                     if delivery_enabled:
-                        manifest = Path(temporary)/delivery_manifest.MEMBER
-                        manifest.write_bytes(delivery_manifest.encode(delivery_manifest.inner_manifest(
-                            task,members,data,file_rows,cancel=force_cancel_check)))
-                        members.append(str(manifest))
+                        delivery_members = delivery_manifest.inner_manifest(task,members,data,file_rows,cancel=force_cancel_check)
+                        if not data.get('task_delivery'):
+                            manifest = Path(temporary)/delivery_manifest.MEMBER
+                            manifest.write_bytes(delivery_manifest.encode(delivery_members))
+                            members.append(str(manifest))
                     _compress(tool,canonical,members,settings,volume,task.layer_index,force_cancel_check)
             else:
                 _compress(tool,canonical,members,settings,volume,task.layer_index,force_cancel_check)
@@ -181,7 +194,7 @@ def execute_plan(plan, inputs, destination, bandizip='bz', cancel_check=None,
                 original_ids=list(task.unit.original_ids), format=settings.archive_format,
                 folder=folder.relative_to(root).as_posix(), entry=entry_name, files=mapping,
                 metadata={Path(p).name:list(values) for p, values in _snapshot(files).items()})
-            if data['schema']==retention.SCHEMA:
+            if data['schema']==retention.SCHEMA or 'publication' in data:
                 for path in files:
                     with open(path,'r+b') as artifact:
                         os.fsync(artifact.fileno())
@@ -192,6 +205,8 @@ def execute_plan(plan, inputs, destination, bandizip='bz', cancel_check=None,
                     record['members_verified'] = True
             if delivery_enabled:
                 record['delivery'] = delivery_manifest.archive_manifest(root,task,record,tool_id,cancel=force_cancel_check)
+                if data.get('task_delivery'):
+                    record['delivery_members'] = delivery_members
             stage = tr('写入断点')
             data['completed'][task.unit.unit_id] = record
             engine._write_checkpoint(root, data)
@@ -211,7 +226,7 @@ def execute_plan(plan, inputs, destination, bandizip='bz', cancel_check=None,
                 reason = tr('程序或文件缺失')
             else:
                 reason = engine.redact(error,task.settings.password)
-            message = tr('{0} 第 {1} 层「{2}」失败：{3}。断点：{4}', tool.name, task.layer_index+1, stage, reason, engine._checkpoint_path(root))
+            message = tr('{0} 第 {1} 层「{2}」失败：{3}。断点：{4}', tool.name, task.layer_index+1, stage, reason, engine._checkpoint_path(root,data))
             print(message)
             return ExecutionResult('error',available,records,message)
     return ExecutionResult('completed', available, records)

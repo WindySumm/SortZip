@@ -1,8 +1,9 @@
-"""Portable, versioned metadata for a single chain of archive groups."""
+"""Versioned per-archive and task-wide delivery manifests."""
 import json
 import re
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from itertools import count
 import os
 
 from sortzip_core.archive_tools import TOOL_FORMATS, entry_name, shown_name
@@ -16,6 +17,12 @@ MEMBER = '.sortzip-delivery.json'
 EXTENSION = '.sortzip.json'
 FORMATS = {'zip','7z','rar'}
 MAX_MANIFEST = 16*1024*1024
+MAX_LAYERS = 128
+
+
+def uses_task_manifest(config):
+    return (bool(config.get('managed_recovery'))
+            and config.get('archive_tool','bandizip') in ('bandizip','7zip'))
 
 
 def name(value):
@@ -24,6 +31,33 @@ def name(value):
             or re.fullmatch(r'(?i)(CONIN\$|CONOUT\$|(?:COM|LPT)[¹²³])',value.split('.')[0].rstrip(' '))):
         raise ValueError(tr('解包清单包含无效文件名'))
     return value
+
+
+def choose_task_manifest_name(root,folders,started_at):
+    categories = {}
+    for folder in folders:
+        category = Path(folder).parts[0]
+        categories.setdefault(category.casefold(),category)
+    label = next(iter(categories.values()))[:40].rstrip(' .') or 'SortZip'
+    if len(categories)>1:
+        label += f'等{len(categories)}类'
+    stem = f"{label}-{started_at:%Y-%m-%d_%H%M}"
+    occupied = set(categories)
+    occupied.update(item.name.casefold() for item in root.iterdir())
+    for number in count(1):
+        suffix = '' if number==1 else f'-{number}'
+        candidate = name(stem+suffix+EXTENSION)
+        if candidate.casefold() not in occupied:
+            return candidate
+
+
+def task_manifest_name(state):
+    if 'delivery_manifest_name' in state:
+        value = name(state['delivery_manifest_name'])
+        _require(state.get('task_delivery') is True and len(value)>len(EXTENSION)
+                 and value.endswith(EXTENSION))
+        return value
+    return 'SortZip-'+state['job']+EXTENSION
 
 
 def _require(condition):
@@ -72,7 +106,7 @@ def validate_archive(obj):
 def validate_members(obj):
     _fields(obj,'schema layer children files')
     _require(type(obj['schema']) is int and obj['schema']==1 and type(obj['layer']) is int
-             and 1<=obj['layer']<=128 and isinstance(obj['children'],list) and isinstance(obj['files'],list))
+             and 1<=obj['layer']<=MAX_LAYERS and isinstance(obj['children'],list) and isinstance(obj['files'],list))
     paths,targets = [],[]
     if obj['layer']==1:
         _require(obj['files'] and not obj['children'])
@@ -94,6 +128,152 @@ def validate_members(obj):
             paths.extend(row['shown'] for row in child['volumes'])
     _unique([MEMBER,*paths])
     return obj
+
+
+def validate_outer(obj):
+    if isinstance(obj,dict) and type(obj.get('schema')) is int and obj['schema']==2:
+        count = obj.get('layer_count')
+        _require(type(count) is int and 1<=count<=MAX_LAYERS)
+        archive = dict(obj, schema=1)
+        del archive['layer_count']
+        validate_archive(archive)
+        return obj
+    return validate_archive(obj)
+
+
+def write_outer(path,archive,layer_count):
+    manifest = validate_outer(dict(archive,schema=2,layer_count=layer_count))
+    if file_journal.exists(path) and read(path,validate_outer)==archive:
+        # A previous release may have published this manifest before its final checkpoint write.
+        return
+    write_new(path,manifest)
+
+
+def relative_directory(value):
+    _require(isinstance(value,str))
+    parts = value.split('/') if value else []
+    for part in parts:
+        name(part)
+        _require(not part.casefold().startswith('.sortzip-'))
+    return value
+
+
+def _directory_conflict(path, paths):
+    parents = path.split('/')[:-1]
+    return any('/'.join(parents[:index]) in paths for index in range(1,len(parents)+1))
+
+
+def validate_delivery(obj):
+    if not isinstance(obj,dict) or obj.get('kind')!='sortzip-task':
+        return validate_outer(obj)
+    _fields(obj,'schema kind groups'+(' passwords' if 'passwords' in obj else ''))
+    if 'passwords' in obj:
+        from sortzip_core.delivery_passwords import valid_envelope
+        _require(valid_envelope(obj['passwords']))
+    _require(type(obj['schema']) is int and obj['schema']==1 and isinstance(obj['groups'],list) and obj['groups'])
+    volumes = set()
+
+    def inspect(node,level,tool,targets):
+        _fields(node,'archive members children')
+        archive = validate_archive(node['archive'])
+        _require(archive['tool']==tool)
+        data = node['members']
+        _require(isinstance(data,dict) and data.get('layer')==level)
+        if level==1:
+            _require(isinstance(data.get('files'),list))
+            rows = []
+            for row in data['files']:
+                _require(isinstance(row,dict) and type(row.get('auxiliary')) is bool)
+                row = dict(row)
+                if not row['auxiliary']:
+                    _require('directory' in row)
+                    directory = relative_directory(row.pop('directory'))
+                    filename = name(row.get('name'))
+                    for enabled in (False,True):
+                        target_name = name(row.get('original',filename)) if enabled else filename
+                        _require(not target_name.casefold().startswith('.sortzip-'))
+                        target = '/'.join(filter(None,(directory,target_name))).casefold()
+                        _require(target not in targets[enabled])
+                        targets[enabled].add(target)
+                rows.append(row)
+            validate_members(dict(data,files=rows))
+        else:
+            validate_members(data)
+        children = node['children']
+        _require(isinstance(children,list) and len(children)==len(data['children']))
+        for child,descriptor in zip(children,data['children'],strict=True):
+            inspect(child,level-1,tool,targets)
+            _require(child['archive']==descriptor)
+
+    targets = {False:set(),True:set()}
+    for group in obj['groups']:
+        _fields(group,'folder layer_count tree')
+        folder = relative_directory(group['folder'])
+        count = group['layer_count']
+        _require(type(count) is int and 1<=count<=MAX_LAYERS)
+        tree = group['tree']
+        _require(isinstance(tree,dict) and isinstance(tree.get('archive'),dict))
+        inspect(tree,count,tree['archive'].get('tool'),targets)
+        for row in tree['archive']['volumes']:
+            for filename in {row['shown'].casefold(),row['canonical'].casefold()}:
+                key = (folder.casefold(),filename)
+                _require(key not in volumes)
+                volumes.add(key)
+    for paths in targets.values():
+        _require(not any(_directory_conflict(path,paths) for path in paths))
+    return obj
+
+
+def validate_source_paths(entries,original):
+    targets = {False:set(),True:set()}
+    for entry in entries:
+        source = entry['source_rel'].split('/')
+        folder = relative_directory('/'.join(source[:-1]))
+        for restore in targets:
+            filename = source[-1] if restore and original else entry['target_name']
+            name(filename)
+            _require(not filename.casefold().startswith('.sortzip-'))
+            identity = '/'.join(filter(None,(folder,filename)))
+            folded = identity.casefold()
+            if folded in targets[restore]:
+                raise ValueError(tr('解包时文件名会冲突：{0}',identity))
+            targets[restore].add(folded)
+    for files in targets.values():
+        for path in files:
+            if _directory_conflict(path,files):
+                raise ValueError(tr('解包时文件名会冲突：{0}',path))
+
+
+def write_task(root,plan,state,config):
+    records = state['completed']
+
+    def tree(identity):
+        record = records[identity]
+        members = record['delivery_members']
+        return dict(archive=record['delivery'],members=members,
+                    children=[tree(child) for child in record['inputs']] if record['layer'] else [])
+
+    groups = [dict(folder=records[key]['folder'],layer_count=records[key]['layer']+1,tree=tree(key))
+              for key in plan.final_ids]
+    manifest = validate_delivery(dict(schema=1,kind='sortzip-task',groups=groups))
+    path = file_journal.safe_path(root,task_manifest_name(state))
+    mode = state.get('delivery_password_mode','none')
+    if mode!='none':
+        from sortzip_core.delivery_passwords import protect,unlock
+        from sortzip_core.resume_passwords import verify_delivery_passwords
+        passwords = {str(task.layer_index):task.settings.password for task in plan.tasks if task.settings.password}
+        verify_delivery_passwords(state,passwords)
+        phrase = config.get('delivery_phrase','')
+        if file_journal.exists(path):
+            existing = read(path,validate_delivery)
+            envelope = existing.get('passwords',{})
+            if (dict((key,value) for key,value in existing.items() if key!='passwords')==manifest
+                    and envelope.get('mode')==mode and unlock(existing,phrase)==passwords):
+                return
+            raise ValueError(tr('输出位置已被占用：{0}',path))
+        manifest['passwords'] = protect(manifest,mode,passwords,phrase)
+        validate_delivery(manifest)
+    write_new(path,manifest)
 
 
 def read(path,validate):
@@ -145,7 +325,7 @@ def describe(path,shown=None,canonical=None,*,cancel=None):
 
 
 def validate_plan(plan, entries, *, original, context=None):
-    if len({task.layer_index for task in plan.tasks})>128 or any(task.settings.archive_format not in FORMATS for task in plan.tasks):
+    if len({task.layer_index for task in plan.tasks})>MAX_LAYERS or any(task.settings.archive_format not in FORMATS for task in plan.tasks):
         raise ValueError(tr('自动解包仅支持最多 128 层的 ZIP、7Z 和 RAR5'))
     for row in entries:
         if context:
@@ -177,8 +357,13 @@ def inner_manifest(task, members, state, rows, *, cancel):
             row = dict(name=path.name,size=info['identity'][2],sha256=info['sha256'],auxiliary=False)
             if state.get('delivery_original_names'):
                 row['original'] = Path(original).name
+            if state.get('task_delivery'):
+                row['directory'] = '/'.join(original.split('/')[:-1])
         files.append(row)
-    return validate_members(dict(schema=1,layer=1,children=[],files=files))
+    payload = dict(schema=1,layer=1,children=[],files=files)
+    validate_members(dict(payload,files=[{key:value for key,value in row.items() if key!='directory'}
+                                        for row in files]))
+    return payload
 
 
 def archive_manifest(root,task,record,tool,*,cancel):

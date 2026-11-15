@@ -314,7 +314,7 @@ class WorkbenchPrototypeTests(unittest.TestCase):
         first,outer = window.navigation.item(2),window.navigation.item(3)
         self.assertEqual(first.sizeHint().height(),76)
         self.assertEqual(first.data(NodeRole.Summary),'ZIP · 每包 2 文件')
-        self.assertEqual(outer.data(NodeRole.Summary),'ZIP · 每包 2 单元')
+        self.assertEqual(outer.data(NodeRole.Summary),'ZIP · 每包 2 压缩包')
         self.assertTrue(outer.data(NodeRole.Outer))
         self.assertIn('最外层',outer.data(Qt.AccessibleTextRole))
         self.assertIn('共 2 组',outer.toolTip())

@@ -9,6 +9,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('assets/sortzip.ico', 'assets'), ('sortzip_core/restore_names.ps1', 'sortzip_core'),
+           ('sortzip_core/restore_category.ps1', 'sortzip_core'),
            ('sortzip_core/translations/en.json', 'sortzip_core/translations'),
            (str(qt_translations / 'qtbase_zh_CN.qm'), 'PySide6/translations')],
     hiddenimports=[],

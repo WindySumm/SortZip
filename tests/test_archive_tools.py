@@ -1,5 +1,4 @@
 import contextlib
-import csv
 import io
 import json
 import os
@@ -154,16 +153,17 @@ class ArchiveToolTests(unittest.TestCase):
         self.assertNotIn(secret.encode(),proc.stdout+proc.stderr)
         after = json.loads(checkpoint.read_text(encoding='utf-8'))
         for identity,record in before['completed'].items():
-            self.assertEqual(record,after['completed'][identity])
+            self.assertEqual(dict(record,folder='材料/layer-1'),after['completed'][identity])
         final = after['completed'][after['final_ids'][0]]
-        with (self.dest/'材料/List.txt').open(encoding='utf-8',newline='') as stream:
-            rows = list(csv.DictReader(stream,delimiter='\t'))
+        from sortzip_core.nested_pipeline import list_rows
+        rows = list(list_rows(self.dest/'材料/List.txt'))
         self.assertEqual(len(rows),3)
         self.assertTrue(all(row['所属压缩包名']==final['folder']+'/'+final['entry'] for row in rows))
         delivery = self.root/'delivery'
         shutil.copytree(self.dest/final['folder'],delivery)
-        subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',
-            str(delivery/'Restore-Archive-Names/Restore-Names.ps1')],check=True,capture_output=True,timeout=30)
+        launcher = next(delivery.glob('*.cmd'))
+        subprocess.run(['cmd.exe','/d','/c',launcher.name],cwd=delivery,input=b'\r\n',
+                       check=True,capture_output=True,timeout=30)
         outer_entry = delivery/rows[0]['标准入口卷名']
         if tool=='winrar':
             self.assertEqual(outer_entry.read_bytes()[:8],b'Rar!\x1a\x07\x01\x00')

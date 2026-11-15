@@ -83,6 +83,8 @@ class Worker(QObject):
             self.error.emit(message)
         finally:
             self.config.pop('unpack_passwords',None)
+            self.config.pop('unpack_delivery_phrases',None)
+            self.config.pop('delivery_phrase',None)
             sys.stdout = old_stdout
             self.finished.emit()
 

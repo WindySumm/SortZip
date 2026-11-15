@@ -1,5 +1,4 @@
 import contextlib
-import csv
 import io
 import json
 import os
@@ -12,6 +11,7 @@ from unittest.mock import patch
 
 from sortzip_core import engine
 from sortzip_core.formats import FORMATS, validate_compression
+from sortzip_core.nested_pipeline import list_rows
 
 
 class StageTwoTests(unittest.TestCase):
@@ -59,11 +59,10 @@ class StageTwoTests(unittest.TestCase):
             return self.fake_process(cmd)
         with patch.object(engine, '_run_proc', side_effect=compressed):
             self.assertEqual(engine.main_from_config(self.config, stats=stats), 'completed')
-        with (self.dest / 'doc/List.txt').open(encoding='utf-8') as stream:
-            rows = list(csv.reader(stream, delimiter='\t'))
-        self.assertEqual([r[1] for r in rows[1:]], ['f10.txt', 'f1.txt', 'f2.txt'])
-        self.assertEqual([r[2] for r in rows[1:]], ['1.txt', '2.txt', '3.txt'])
-        self.assertEqual([r[3] for r in rows[1:]], [e['archive'] for e in plan])
+        rows = list(list_rows(self.dest / 'doc/List.txt'))
+        self.assertEqual([r['原文件名'] for r in rows], ['f10.txt', 'f1.txt', 'f2.txt'])
+        self.assertEqual([r['新文件名'] for r in rows], ['1.txt', '2.txt', '3.txt'])
+        self.assertEqual([r['所属压缩包名'] for r in rows], [e['archive'] for e in plan])
         self.assertEqual(groups, [['f10.txt', 'f1.txt'], ['f2.txt']])
         self.assertEqual(stats['files_moved'], 3)
         self.assertEqual(stats['files_renamed'], 3)

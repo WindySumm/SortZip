@@ -50,8 +50,11 @@ def prepare_config(config, confirmation=None, require_files=False, *, context=No
         raise ConfigurationError(tr('输出文件夹无效'), tr('请选择输出文件夹'))
     if Path(result['dest']).exists() and not Path(result['dest']).is_dir():
         raise ConfigurationError(tr('输出文件夹无效'), tr('输出位置已存在且不是文件夹'))
-    if (result.get('first_compress',True) or 'archive_tool' in result) and (Path(result['dest'])/RESUME_FILE_NAME).exists():
-        raise ConfigurationError(tr('输出已有恢复任务'), tr('输出目录中已有断点，请先恢复原任务或选择其他输出目录，避免覆盖恢复记录。'))
+    from sortzip_core.file_journal import exists, managed_compression
+    output = Path(result['dest']).resolve()
+    if (result.get('first_compress',True) or 'archive_tool' in result) and (
+            exists(output/RESUME_FILE_NAME) or managed_compression(output) is not None):
+        raise ConfigurationError(tr('输出已有恢复任务'), tr('这里有未完成的任务。请选择「任务 → 恢复任务」，或换一个输出文件夹。'))
     if not nested:
         validate_compression(result)
     if result.get('first_compress', True) and not nested:
@@ -59,13 +62,20 @@ def prepare_config(config, confirmation=None, require_files=False, *, context=No
         error = validate_password(password, password if confirmation is None else confirmation)
         if error:
             raise ConfigurationError(*error)
-    if require_files and Path(result['dest']).is_dir():
+    source, destination = Path(result['src']).resolve(), Path(result['dest']).resolve()
+    if source==destination:
+        raise ConfigurationError(tr('输出文件夹无效'),tr('输入和输出文件夹不能相同'))
+    parent_output = source.is_relative_to(destination)
+    if require_files and destination.is_dir() and not parent_output:
         existing = {p.name.casefold() for p in Path(result['dest']).iterdir() if p.is_dir()}
         overlap = [name for name in (result.get('custom_names') or {}).values() if name.casefold() in existing]
         if overlap:
             raise ConfigurationError(tr('输出文件夹冲突'), tr('输出中已存在映射目录，请清理或修改名称：') + '、'.join(sorted(set(overlap))))
     if result.get('execution_plan') is None:
         result['execution_plan'] = build_execution_plan(result,context=context)
+    if parent_output:
+        from sortzip_core.file_journal import validate_parent_output
+        validate_parent_output(destination,source,result['execution_plan'],result.get('output_list'),context=context)
     if require_files and result.get('recursive') and not result.get('keep_hierarchy'):
         seen = set()
         for entry in result['execution_plan']:

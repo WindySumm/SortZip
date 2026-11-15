@@ -1,4 +1,4 @@
-import csv
+from io import BytesIO
 import json
 import os
 from pathlib import Path
@@ -58,7 +58,7 @@ class RetentionTests(unittest.TestCase):
         unlink = Path.unlink
         def interrupt(path,*args,**kwargs):
             unlink(path,*args,**kwargs)
-            if (self.output/'layer-1') in path.parents:
+            if any(parent.name=='layer-1' for parent in path.parents):
                 raise KeyboardInterrupt()
         with patch.object(engine,'_run_proc',side_effect=self.fake_zip):
             with patch.object(Path,'unlink',interrupt),self.assertRaises(KeyboardInterrupt):
@@ -71,10 +71,31 @@ class RetentionTests(unittest.TestCase):
                 self.assertEqual(self.resume(),'completed')
                 self.assertEqual(self.resume(),'completed')
         self.assertEqual(set(self.state()['cleanup'].values()),{'done'})
-        self.assertFalse(list((self.output/'layer-1').rglob('*.zip')))
-        self.assertFalse(list((self.output/'layer-2').rglob('*.zip')))
+        self.assertFalse(list(self.output.rglob('layer-1')))
+        self.assertFalse(list(self.output.rglob('layer-2')))
+        self.assertFalse(list(self.output.glob('.sortzip-archives-*')))
         self.assertTrue((self.output/'docs/List.txt').is_file())
         self.assertEqual({p.name:p.read_bytes() for p in self.source.iterdir()},self.payload)
+
+    def test_each_innermost_archive_gets_its_own_localized_restore_script(self):
+        for language,launcher in (('zh','还原原文件名.cmd'),('en','SortZip-Restore-Names.cmd')):
+            with self.subTest(language=language):
+                output = self.root/language
+                config = dict(self.config,dest=str(output),restore_original_names=True,
+                              compression_layers=(Layer(1,'zip'),Layer(2,'zip')))
+                with patch.object(engine,'_run_proc',side_effect=self.fake_zip), patch(
+                        'sortzip_core.task_recovery.current_language',return_value=language):
+                    self.assertEqual(engine.main_from_config(config),'completed')
+                self.assertFalse(list(output.rglob('*.cmd')))
+                archives = list((output/'docs').glob('*.zip'))
+                self.assertEqual(len(archives),1)
+                with zipfile.ZipFile(archives[0]) as outer:
+                    self.assertEqual(len(outer.namelist()),2)
+                    for name in outer.namelist():
+                        self.assertTrue(name.endswith('.zip'),name)
+                        with zipfile.ZipFile(BytesIO(outer.read(name))) as inner:
+                            scripts = [member for member in inner.namelist() if member.endswith('.cmd')]
+                            self.assertEqual(scripts,[launcher])
 
     def test_list_republishes_without_working_files_and_keeps_conflicting_file(self):
         listing = self.output/'docs/List.txt'
@@ -259,6 +280,7 @@ class RetentionTests(unittest.TestCase):
             window.retention_shortcuts.itemAt(0).widget().click()
             self.assertFalse(window.state.to_config()['keep_files'])
             self.assertEqual(window.state.to_config()['retain_layers'],[])
+            window.retention_toggle.click()
             window.retention_layout.itemAt(1).widget().findChild(QPushButton).click()
             window.restore_original_names.click()
             self.assertEqual(window.state.to_config()['retain_layers'],[0,1])
@@ -322,7 +344,7 @@ class RetentionTests(unittest.TestCase):
                     stopped = start==40 and done==2
                 self.assertEqual(engine.main_from_config(config,on_progress=progress,cancel_check=lambda:stopped),
                                  'safe_cancelled')
-                self.assertFalse(list((output/'layer-1').rglob('*.001')))
+                self.assertFalse(list(output.rglob('layer-1/*.001')))
                 resume = json.dumps(dict(resume_from=str(self.checkpoint),archive_tool_paths={tool:exe}))
                 child = subprocess.run([sys.executable,'-c',
                     'import json,sys; from sortzip_core.engine import main_from_config; '
@@ -337,10 +359,9 @@ class RetentionTests(unittest.TestCase):
                 self.assertTrue((output/records[1]['folder']/records[1]['entry']).is_file())
                 outer = records[2]
                 self.assertGreater(len(outer['files']),1)
-                with (output/'docs/List.txt').open(encoding='utf-8',newline='') as stream:
-                    reader = csv.DictReader(stream,delimiter='\t')
-                    rows = list(reader)
-                self.assertEqual(reader.fieldnames,['序号','原文件名','新文件名','所属压缩包名','标准入口卷名','归档文件数'])
+                from sortzip_core.nested_pipeline import list_rows
+                rows = list(list_rows(output/'docs/List.txt'))
+                self.assertEqual(list(rows[0]),['序号','原文件名','新文件名','所属压缩包名','标准入口卷名','归档文件数'])
                 self.assertEqual({row['原文件名'] for row in rows},set(self.payload))
                 canonical_entry = next(row['canonical'] for row in outer['files'] if row['shown']==outer['entry'])
                 volumes = self.root/f'{tool}-standard'

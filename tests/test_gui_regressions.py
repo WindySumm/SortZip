@@ -28,9 +28,15 @@ class GuiRegressions(unittest.TestCase):
         self.addCleanup(self.window.close)
 
     def test_password_dialog_validates_actual_accept_slot(self):
-        from PySide6.QtWidgets import QDialog
+        from PySide6.QtWidgets import QDialog,QLineEdit
         from sortzip_core.widgets import PasswordDialog
         dialog = PasswordDialog()
+        self.assertEqual(len(dialog.show_password.buttons),2)
+        self.assertTrue(all(edit.echoMode()==QLineEdit.EchoMode.Password for edit in dialog.show_password.edits))
+        dialog.show_password.buttons[0].click()
+        self.assertTrue(all(edit.echoMode()==QLineEdit.EchoMode.Normal for edit in dialog.show_password.edits))
+        dialog.show_password.buttons[1].click()
+        self.assertTrue(all(edit.echoMode()==QLineEdit.EchoMode.Password for edit in dialog.show_password.edits))
         dialog.password_edit.setText('12345678')
         dialog.confirm_edit.setText('different')
         with patch('sortzip_core.widgets.show_styled_dialog') as warning:
@@ -222,7 +228,7 @@ class GuiRegressions(unittest.TestCase):
         with patch.object(self.window,'_build_config',return_value=config):
             self.window._refresh_preview()
         self.assertEqual(self.window.preview_table.rowCount(),2)
-        self.assertEqual(self.window.preview_table.item(0,2).text(),'layer-2/doc/1-2/1-2.png')
+        self.assertEqual(self.window.preview_table.item(0,2).text(),'doc/1-2.png')
 
     def test_map_all_excludes_checkpoint_and_navigation_has_five_pages(self):
         from sortzip_core.constants import RESUME_FILE_NAME

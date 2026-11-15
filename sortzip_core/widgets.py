@@ -26,24 +26,29 @@ def resource_path(relative_path):
 
 
 class PasswordDialog(QDialog):
-    """复用主界面密码区块的交互：密码 + 确认密码 + 显示/隐藏切换 + 长度/一致性校验。"""
+    """Share masked entry and confirmation for archive passwords and delivery passphrases."""
 
-    def __init__(self, parent=None, initial="", hint=""):
+    def __init__(self, parent=None, initial="", hint="", *, delivery=False):
         super().__init__(parent)
-        self.setWindowTitle(tr('输入压缩密码'))
-        self.setFixedSize(340, 230)
+        self._delivery = delivery
+        self.setWindowTitle(tr('输入交付口令') if delivery else tr('输入压缩密码'))
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
-        title_lbl = QLabel(tr('输入压缩密码'))
-        title_lbl.setStyleSheet("font-size: 14px; font-weight: bold;")
-        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title_lbl)
+        if delivery:
+            self.setMinimumWidth(340)
+        else:
+            self.setFixedSize(340, 230)
+            title_lbl = QLabel(self.windowTitle())
+            title_lbl.setStyleSheet("font-size: 14px; font-weight: bold;")
+            title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(title_lbl)
 
         if hint:
             hint_lbl = QLabel(hint)
             hint_lbl.setStyleSheet("color: #888888; font-size: 12px;")
             hint_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            hint_lbl.setWordWrap(delivery)
             layout.addWidget(hint_lbl)
 
         form = QFormLayout()
@@ -51,20 +56,15 @@ class PasswordDialog(QDialog):
 
         self.password_edit = QLineEdit(initial)
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_edit.setPlaceholderText(tr('留空表示无密码'))
+        self.password_edit.setPlaceholderText(tr('至少 12 个字符') if delivery else tr('留空表示无密码'))
         self.confirm_edit = QLineEdit(initial)
         self.confirm_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.confirm_edit.setPlaceholderText(tr('再次输入压缩密码'))
-        self.pwd_toggle_btn = QPushButton(tr('显示'))
-        self.pwd_toggle_btn.setFixedWidth(40)
-        self.pwd_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.pwd_toggle_btn.clicked.connect(self._toggle_password)
-        confirm_row = QHBoxLayout()
-        confirm_row.addWidget(self.confirm_edit)
-        confirm_row.addWidget(self.pwd_toggle_btn)
+        self.confirm_edit.setPlaceholderText(tr('再次输入交付口令') if delivery else tr('再次输入压缩密码'))
+        from sortzip_core.ui_controls import PasswordVisibility
+        self.show_password = PasswordVisibility((self.password_edit,self.confirm_edit),self)
 
-        form.addRow(tr('压缩密码:'), self.password_edit)
-        form.addRow(tr('确认密码:'), confirm_row)
+        form.addRow(tr('交付口令:') if delivery else tr('压缩密码:'), self.password_edit)
+        form.addRow(tr('确认口令:') if delivery else tr('确认密码:'), self.confirm_edit)
         layout.addLayout(form)
 
         btn_row = QHBoxLayout()
@@ -78,18 +78,18 @@ class PasswordDialog(QDialog):
         btn_row.addWidget(ok_btn)
         layout.addLayout(btn_row)
 
-    def _toggle_password(self):
-        if self.password_edit.echoMode() == QLineEdit.EchoMode.Password:
-            self.password_edit.setEchoMode(QLineEdit.EchoMode.Normal)
-            self.confirm_edit.setEchoMode(QLineEdit.EchoMode.Normal)
-            self.pwd_toggle_btn.setText(tr('隐藏'))
-        else:
-            self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-            self.confirm_edit.setEchoMode(QLineEdit.EchoMode.Password)
-            self.pwd_toggle_btn.setText(tr('显示'))
-
     def _on_ok(self):
-        err = validate_password(self.password_edit.text(), self.confirm_edit.text())
+        value,confirmation = self.password(),self.confirm_edit.text()
+        if self._delivery:
+            if not 12<=len(value)<=1024:
+                show_styled_dialog(self,self.windowTitle(),tr('交付口令长度应为 12 至 1024 个字符。'))
+                return
+            if value!=confirmation:
+                show_styled_dialog(self,self.windowTitle(),tr('两次输入的交付口令不一致。'))
+                return
+            self.accept()
+            return
+        err = validate_password(value,confirmation)
         if err:
             show_styled_dialog(self, err[0], err[1])
             return
@@ -168,6 +168,15 @@ def show_stats_dialog(parent, stats, dest_path=None, status="completed"):
         layout.addLayout(row)
     layout.addStretch()
     btn_layout = QHBoxLayout()
+    if recovery_path := stats.get('recovery_path'):
+        from pathlib import Path
+        path = Path(recovery_path)
+        folder = path if path.is_dir() else path.parent
+        if folder.is_dir():
+            recovery = QPushButton(tr('打开恢复目录'))
+            recovery.setToolTip(str(folder))
+            recovery.clicked.connect(lambda: os.startfile(folder))
+            btn_layout.addWidget(recovery)
     if dest_path:
         open_btn = QPushButton(tr('打开输出文件夹'))
         open_btn.clicked.connect(lambda: os.startfile(dest_path))

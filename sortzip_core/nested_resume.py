@@ -9,7 +9,7 @@ from sortzip_core.nesting import Layer, MaterializedUnit, Plan, Task, Unit
 from sortzip_core.nested_execution import _snapshot, execute_plan
 from sortzip_core.archive_tools import TOOL_NAMES, entry_name, shown_name, validate_tool_layers
 from sortzip_core.i18n import tr
-from sortzip_core import retention, file_journal
+from sortzip_core import archive_publication, retention, file_journal
 
 
 def _relative(root, value, single=False):
@@ -38,7 +38,7 @@ def load_resume(checkpoint, passwords=None, source_roots=None, *, inspect_only=F
     Passwords are keyed by zero-based layer index.
     """
     checkpoint = Path(checkpoint).resolve()
-    root = checkpoint.parent
+    root = file_journal.recovery_output(checkpoint)
     if checkpoint.name != RESUME_FILE_NAME:
         raise ValueError(tr('请选择标准断点文件'))
     state = json.loads(checkpoint.read_text(encoding='utf-8'))
@@ -151,7 +151,19 @@ def load_resume(checkpoint, passwords=None, source_roots=None, *, inspect_only=F
     if set(completed)!=set(t.unit.unit_id for t in tasks[:len(completed)]):
         raise ValueError(tr('已完成状态不满足依赖顺序'))
     plan = Plan(tuple(tasks),final_ids)
+    if 'script_language' in state and state['script_language'] not in ('zh','en'):
+        raise ValueError(tr('断点语言设置无效'))
     cleanup = retention.validate(state,plan) if state['schema']==retention.SCHEMA else {}
+    archive_publication.validate_state(plan,state)
+    publication = state.get('publication')
+    published_ids = set(publication['done']) if publication is not None else set()
+    outer_ids = set(plan.final_ids)
+    source = Path(state['input_root']) if state['schema']>=4 and isinstance(state.get('input_root'),str) else None
+    if source is not None and source.is_relative_to(root):
+        for task in tasks:
+            folder = archive_publication.work_folder(root,task,state).relative_to(root).as_posix()
+            archive = file_journal.safe_path(root,folder)
+            file_journal.check_output_outside_input(root,source,archive)
     if state.get('delivery_manifest'):
         from sortzip_core.delivery_manifest import validate_archive,validate_plan
         validate_plan(plan,state['file_plan'],original=state.get('delivery_original_names',False))
@@ -167,9 +179,15 @@ def load_resume(checkpoint, passwords=None, source_roots=None, *, inspect_only=F
         if 'members_verified' in record and record['members_verified'] is not True:
             raise ValueError(tr('归档成员校验记录无效'))
         folder = _relative(root, record.get('folder'))
-        expected = root/f'layer-{task.layer_index+1}'/task.unit.folder
-        if (folder.parent.resolve()!=expected.resolve() or not re.fullmatch(
-                re.escape(task.archive_stem)+r'(?:\.retry-[0-9a-f]{32})?', folder.name)):
+        if source is not None and source.is_relative_to(root):
+            file_journal.safe_path(root,record['folder'])
+            file_journal.check_output_outside_input(root,source,folder)
+        published = task.unit.unit_id in published_ids
+        expected = archive_publication.work_folder(root,task,state).parent
+        final_folder = archive_publication.folder_for(task,outer_ids)
+        valid_folder = (folder==root/final_folder if published else folder.parent==expected and re.fullmatch(
+            re.escape(task.archive_stem)+r'(?:\.retry-[0-9a-f]{32})?',folder.name))
+        if not valid_folder:
             raise ValueError(tr('产物目录与计划不一致'))
         mapping, metadata = record.get('files'), record.get('metadata')
         if not isinstance(mapping,list) or not mapping or not isinstance(metadata,dict):
@@ -207,7 +225,7 @@ def load_resume(checkpoint, passwords=None, source_roots=None, *, inspect_only=F
                     or {(row['shown'],row['canonical'],row['size']) for row in manifest['volumes']}
                     !={(row['shown'],row['canonical'],metadata[row['shown']][0]) for row in mapping}):
                 raise ValueError(tr('解包清单结构无效'))
-        if state['schema']==retention.SCHEMA:
+        if state['schema']==retention.SCHEMA or publication is not None:
             identities = retention.archive_identity(record)
             step = cleanup.get(task.unit.unit_id)
             if step!='done':
@@ -215,8 +233,10 @@ def load_resume(checkpoint, passwords=None, source_roots=None, *, inspect_only=F
                     candidate = file_journal.safe_path(root,Path(path).relative_to(root).as_posix())
                     if step=='pending' and not file_journal.exists(candidate):
                         continue
-                    if not file_journal.exists(candidate) or list(file_journal.identity(candidate))!=identities[candidate.name]:
-                        raise ValueError(tr('已完成产物缺失或发生变化：{0}', candidate))
+                    target = archive_publication.checked_path(root,source,final_folder/candidate.name) if (
+                        publication is not None and publication['started'] and not published) else candidate
+                    archive_publication.current_volume(candidate,target,tuple(identities[candidate.name]),
+                        allow_alternate=candidate!=target)
         else:
             actual = {Path(p).name:values for p,values in _snapshot(paths).items()}
             if actual!={name:_metadata(info) for name,info in metadata.items()}:

@@ -24,6 +24,14 @@ def make_checks(layers):
     return checks
 
 
+def verify_delivery_passwords(state,passwords):
+    for level,check in state['password_checks'].items():
+        password = passwords.get(level)
+        if not password or not hmac.compare_digest(
+                _derive(password,bytes.fromhex(check['salt'])),bytes.fromhex(check['digest'])):
+            raise ValueError(tr('第 {0} 层密码与原任务不一致',int(level)+1))
+
+
 def validate_checks(checks,encrypted):
     if not isinstance(checks,dict) or checks.keys()!={str(level) for level in encrypted}:
         raise ValueError(tr('断点缺少分层密码校验数据'))

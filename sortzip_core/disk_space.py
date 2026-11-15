@@ -67,7 +67,8 @@ def resume_report(root,plan,available,state,*,copies=()):
             device = report.locate(paths[0].parent)
             metadata = completed[identity]['metadata'] if identity in completed else state['sources'][identity]
             report.sizes[identity] = device,sum(info[0] for info in metadata.values()),len(paths)
-        report.archives(root,plan,retained,state.get('restore_original_names'),completed)
+        report.archives(root,plan,retained,state.get('restore_original_names'),completed,
+                        staged='publication' in state)
     return report.render()[0]
 
 
@@ -104,7 +105,7 @@ class _Estimate:
         if source_device is not None:
             self.written[source_device] -= size
 
-    def archives(self,root,plan,retained,restore,completed,context=None):
+    def archives(self,root,plan,retained,restore,completed,context=None,*,staged=False):
         from sortzip_core.retention import eligible
         consumers = eligible(plan,retained) if retained is not None else {}
         for task in plan.tasks:
@@ -117,7 +118,7 @@ class _Estimate:
                     device,size,_ = self.sizes[identity]
                     self.retained[device,level] += size
                 continue
-            folder = root / f'layer-{level}' / task.unit.folder
+            folder = root if staged else root / f'layer-{level}' / task.unit.folder
             device = self.locate(folder)
             children = [self.sizes[child] for child in task.input_ids]
             payload,count = sum(item[1] for item in children),sum(item[2] for item in children)
@@ -180,5 +181,5 @@ def inspect(config, *, context=None):
             report.copy(folder,size,source_device=None if config.get('keep_files') else source_device)
         report.sizes['source:'+entry['source_rel']] = device,size,1
     if plan:
-        report.archives(root,plan,keep,config.get('restore_original_names'),{},context)
+        report.archives(root,plan,keep,config.get('restore_original_names'),{},context,staged=True)
     return report.render()

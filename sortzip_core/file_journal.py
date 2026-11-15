@@ -1,21 +1,96 @@
 """Durable operations before compression. Each rename is bracketed by commits."""
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 import errno
 import hashlib
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import stat
 import tempfile
+from threading import Lock
 
-from sortzip_core.constants import is_task_artifact, validate_win_folder_name
+from sortzip_core.constants import RESUME_FILE_NAME, is_task_artifact, validate_win_folder_name
 from sortzip_core.i18n import tr
 
 
 DATABASE = '.sortzip-files.sqlite3'
 LOCK = '.sortzip-task.lock'
+RECOVERY = '.sortzip-recovery'
+COMPRESSION = 'compression'
+_RECOVERY_OWNER = '.sortzip-recovery-owner'
+_active_mutexes = set()
+_active_mutexes_lock = Lock()
+
+
+def recovery_directory(root):
+    path = safe_path(root,RECOVERY)
+    if path.is_junction() or (exists(path) and not path.is_dir()):
+        raise ValueError(tr('目录已被替换或为链接：{0}',path))
+    return path
+
+
+def recovery_output(checkpoint):
+    directory = checkpoint.parent
+    if is_compression_directory(directory.name) and directory.parent.name==RECOVERY:
+        root = directory.parent.parent
+        safe_path(root,f'{RECOVERY}/{directory.name}/{checkpoint.name}')
+        return root
+    return directory
+
+
+def is_compression_directory(value):
+    return isinstance(value,str) and (value==COMPRESSION or bool(
+        re.fullmatch(r'compression-\d{4}-\d{2}-\d{2}_\d{6}-.+',value)) and not validate_win_folder_name(value))
+
+
+def recovery_label(value):
+    return value[:32].strip(' .') or 'SortZip'
+
+
+def compression_directory(root,state):
+    name = state.get('recovery_folder',COMPRESSION)
+    if not is_compression_directory(name):
+        raise ValueError(tr('文件任务断点结构无效'))
+    path = safe_path(root,f'{RECOVERY}/{name}')
+    if path.is_junction() or (exists(path) and not path.is_dir()):
+        raise ValueError(tr('目录已被替换或为链接：{0}',path))
+    return path
+
+
+def managed_compression(root):
+    """Locate the sole resumable file task, including the original fixed folder."""
+    recovery = recovery_directory(root)
+    if not recovery.is_dir():
+        return None
+    candidates = [safe_path(root,f'{RECOVERY}/{item.name}/{RESUME_FILE_NAME}').parent
+                  for item in recovery.iterdir() if is_compression_directory(item.name) and
+                  (exists(item/RESUME_FILE_NAME) or exists(item/DATABASE))]
+    if len(candidates)>1:
+        raise ValueError(tr('输出目录有多个断点，请选择要恢复的文件：{0}',recovery))
+    return candidates[0] if candidates else None
+
+
+def choose_compression_directory(recovery,folders,started):
+    from itertools import count
+    categories = {}
+    for folder in folders:
+        label = Path(folder).parts[0]
+        categories.setdefault(label.casefold(),label)
+    label = recovery_label(next(iter(categories.values())))
+    if len(categories)>1:
+        label += f'等{len(categories)}类'
+    stem = f'{COMPRESSION}-{started:%Y-%m-%d_%H%M%S}-{label}'
+    occupied = {item.name.casefold() for item in recovery.iterdir()} if recovery.is_dir() else set()
+    for index in count(1):
+        candidate = stem if index==1 else f'{stem}-{index}'
+        if candidate.casefold() not in occupied:
+            return candidate
+
+
+SQLITE_MAX_INTEGER = (1 << 63) - 1
 
 
 def identity(path):
@@ -29,6 +104,12 @@ def identity(path):
 
 def exists(path):
     return os.path.lexists(path)
+
+
+def check_output_outside_input(root,source_root,path):
+    """Keep generated paths outside the input tree when writing to its parent."""
+    if source_root.is_relative_to(root) and path.resolve().is_relative_to(source_root):
+        raise ValueError(tr('结果会写进输入文件夹：{0}\n请修改分类名称或另选输出文件夹。',path))
 
 
 def safe_path(root,relative):
@@ -47,12 +128,47 @@ def safe_path(root,relative):
     return path
 
 
+def validate_parent_output(root,source_root,entries,output_list,*,context=None):
+    """Check planned output files before confirmation or file operations."""
+    folders = {}
+    paths = {}
+    for entry in entries:
+        if context: context.check()
+        folder = entry['folder']
+        if folder not in folders:
+            directory = safe_path(root,folder)
+            check_output_outside_input(root,source_root,directory)
+            if exists(directory) and not directory.is_dir():
+                raise ValueError(tr('输出位置已被占用：{0}',directory))
+            folders[folder] = directory
+        directory = folders[folder]
+        for name in (entry['classified_name'],entry['target_name']):
+            path = safe_path(root,folder+'/'+name)
+            if exists(path):
+                raise ValueError(tr('输出位置已被占用：{0}',path))
+            paths[str(path).casefold()] = path
+    if output_list:
+        for directory in folders.values():
+            listing = directory/'List.txt'
+            if exists(listing):
+                raise ValueError(tr('输出位置已被占用：{0}',listing))
+            paths[str(listing).casefold()] = listing
+    for directory in folders.values():
+        for path in (directory,*directory.parents):
+            occupied = paths.get(str(path).casefold())
+            if occupied is not None:
+                raise ValueError(tr('文件和文件夹会使用同一位置：{0}',occupied))
+
+
 @contextmanager
-def task_lock(root):
+def _file_lock(root, *, existing=False):
     path = safe_path(root,LOCK)
+    if existing and not exists(path):
+        yield
+        return
     if exists(path):
         identity(path)
-    with path.open('a+b') as stream:
+    with path.open('r+b' if existing else 'a+b') as stream:
         try:
             if os.name=='nt':
                 import msvcrt
@@ -64,7 +180,116 @@ def task_lock(root):
         except OSError as error:
             raise ValueError(tr('输出目录正在执行另一任务：{0}', root)) from error
         yield
-    # Closing the handle releases the lock, including after process termination.
+
+
+def _windows_directory_key(root):
+    import ctypes
+    from ctypes import wintypes
+    drive_type = ctypes.WinDLL('kernel32').GetDriveTypeW
+    drive_type.argtypes = [wintypes.LPCWSTR]
+    drive_type.restype = wintypes.UINT
+    # Use the shared file lock for UNC and mapped network drives.
+    anchor = root.anchor
+    if anchor.startswith('\\\\?\\'):
+        if anchor[4:8].casefold()=='unc\\':
+            return None
+        if anchor[5:6]==':':
+            anchor = anchor[4:]
+    elif anchor.startswith('\\\\'):
+        return None
+    if drive_type(anchor) not in (2,3,6):
+        return None
+    info = root.stat()
+    if not info.st_ino or not info.st_dev:
+        return None
+    return f'{info.st_dev:x}-{info.st_ino:x}'
+
+
+@contextmanager
+def _windows_mutex(root,key):
+    import ctypes
+    from ctypes import wintypes
+    api = ctypes.WinDLL('kernel32',use_last_error=True)
+    api.CreateMutexW.argtypes = [wintypes.LPVOID,wintypes.BOOL,wintypes.LPCWSTR]
+    api.CreateMutexW.restype = wintypes.HANDLE
+    api.WaitForSingleObject.argtypes = [wintypes.HANDLE,wintypes.DWORD]
+    api.WaitForSingleObject.restype = wintypes.DWORD
+    for function in (api.ReleaseMutex,api.CloseHandle):
+        function.argtypes = [wintypes.HANDLE]
+        function.restype = wintypes.BOOL
+    with _active_mutexes_lock:
+        if key in _active_mutexes:
+            raise ValueError(tr('输出目录正在执行另一任务：{0}',root))
+        _active_mutexes.add(key)
+    try:
+        handle = api.CreateMutexW(None,False,'Global\\SortZip.Output.'+key)
+        if not handle:
+            raise OSError(tr('无法锁定输出目录：{0}（Windows 错误 {1}）',root,ctypes.get_last_error()))
+        try:
+            result = api.WaitForSingleObject(handle,0)
+            if result == 0x102:  # WAIT_TIMEOUT
+                raise ValueError(tr('输出目录正在执行另一任务：{0}',root))
+            if result not in (0,0x80):  # WAIT_OBJECT_0, WAIT_ABANDONED
+                raise OSError(tr('无法锁定输出目录：{0}（Windows 错误 {1}）',root,ctypes.get_last_error()))
+            try:
+                yield
+            finally:
+                api.ReleaseMutex(handle)
+        finally:
+            api.CloseHandle(handle)
+    finally:
+        with _active_mutexes_lock:
+            _active_mutexes.remove(key)
+
+
+@contextmanager
+def task_lock(root):
+    root = root.resolve(strict=True)
+    key = _windows_directory_key(root) if os.name=='nt' else None
+    with ExitStack() as stack:
+        if key is None:
+            stack.enter_context(_file_lock(root))
+        else:
+            stack.enter_context(_windows_mutex(root,key))
+            stack.enter_context(_file_lock(root,existing=True))
+        recovery = recovery_directory(root)
+        if recovery.is_dir():
+            stack.enter_context(_file_lock(recovery,existing=True))
+        yield
+
+
+def legacy_workspace_lock(root):
+    """Honor locks left by older unpackers under the workspace directory."""
+    return _file_lock(root,existing=True)
+
+
+def ensure_recovery_directory(root):
+    path = recovery_directory(root)
+    try:
+        path.mkdir()
+    except FileExistsError:
+        return path
+    with (path/_RECOVERY_OWNER).open('xb') as marker:
+        marker.write(b'SortZip recovery directory\n')
+    return path
+
+
+def remove_empty_recovery(root):
+    path = recovery_directory(root)
+    marker = path/_RECOVERY_OWNER
+    if not exists(marker) or set(path.iterdir())!={marker}:
+        return
+    identity(marker)
+    if marker.read_bytes()!=b'SortZip recovery directory\n':
+        return
+    marker.unlink()
+    try:
+        path.rmdir()
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        if error.errno not in (errno.ENOTEMPTY,errno.EEXIST) and getattr(error,'winerror',None)!=145:
+            raise
 
 
 @contextmanager
@@ -110,8 +335,26 @@ def set_phase(db,value):
 
 
 def record(db,index,step,file_id=(None,None)):
+    # The prefix prevents INTEGER affinity from converting large values to lossy REALs.
+    stored = tuple(f'id:{value:x}' if value is not None and value>SQLITE_MAX_INTEGER else value
+                   for value in file_id)
     with db:
-        db.execute('INSERT OR REPLACE INTO operations VALUES (?,?,?,?)',(index,step,*file_id))
+        db.execute('INSERT OR REPLACE INTO operations VALUES (?,?,?,?)',(index,step,*stored))
+
+
+def _read_file_id(value):
+    if value is None or (type(value) is int and value>=0):
+        return value
+    if isinstance(value,str) and re.fullmatch(r'id:[1-9a-f][0-9a-f]*',value):
+        number = int(value[3:],16)
+        if number>SQLITE_MAX_INTEGER:
+            return number
+    raise ValueError(tr('恢复记录中的文件编号无效。'))
+
+
+def _operation_states(db):
+    return {index:(step,(_read_file_id(device),_read_file_id(inode))) for index,step,device,inode in
+            db.execute('SELECT id,step,device,inode FROM operations')}
 
 
 class Cancelled(Exception):
@@ -240,8 +483,9 @@ def steps(root,state):
                 raise ValueError(tr('断点文件路径重复：{0}', path))
             group.add(key)
         scratch.update(str(path).casefold() for path in paths[3:])
-        if paths[0].is_relative_to(root) or paths[0] in paths[1:]:
-            raise ValueError(tr('断点的输入与输出位置重叠'))
+        if paths[0].is_relative_to(root) and root.is_relative_to(source_root):
+            raise ValueError(tr('源文件在输出文件夹内：{0}',paths[0]))
+        check_output_outside_input(root,source_root,paths[1].parent)
         source_id = item['identity']
         sha = item['sha256']
         if (not isinstance(source_id,list) or len(source_id)!=4 or
@@ -249,8 +493,9 @@ def steps(root,state):
                 not isinstance(sha,str) or len(sha)!=64 or any(c not in '0123456789abcdef' for c in sha)):
             raise ValueError(tr('断点文件身份无效'))
         yield FileStep(index,*paths,tuple(source_id),sha)
-    if groups[0] & (groups[1]|groups[2]):
-        raise ValueError(tr('断点的输入与输出位置重叠'))
+    overlap = groups[0] & (groups[1]|groups[2]|scratch)
+    if overlap:
+        raise ValueError(tr('结果会占用源文件的位置：{0}',min(overlap)))
     destinations = groups[1]|groups[2]
     if scratch & destinations:
         raise ValueError(tr('断点的暂存路径与输出位置重叠'))
@@ -349,8 +594,7 @@ def _rename(db,item,step,file_id,stage):
 
 
 def ready_identities(db,files):
-    recorded = {index:(step,(device,inode)) for index,step,device,inode in
-                db.execute('SELECT id,step,device,inode FROM operations')}
+    recorded = _operation_states(db)
     if phase(db)!='ready' or len(recorded)!=len(files):
         raise ValueError(tr('文件日志尚未完成'))
     for item in files:
@@ -368,8 +612,7 @@ def verify_ready(db,files,*,skip=()):
 
 
 def run(db,files,keep,stats,on_progress,cancelled):
-    states = {index:(step,(device,inode)) for index,step,device,inode in
-              db.execute('SELECT id,step,device,inode FROM operations')}
+    states = _operation_states(db)
     if not states.keys() <= set(range(len(files))):
         raise ValueError(tr('操作日志包含未知文件'))
     current = phase(db)
@@ -400,8 +643,7 @@ def run(db,files,keep,stats,on_progress,cancelled):
                 if on_progress:
                     on_progress(30,40,position,len(files),tr('重命名：{0}', item.target.name))
         set_phase(db,phases[index+1])
-        states = {i:(step,(device,inode)) for i,step,device,inode in
-                  db.execute('SELECT id,step,device,inode FROM operations')}
+        states = _operation_states(db)
     stats['files_moved'] = len(files)
     stats['files_renamed'] = sum(item.classified.name!=item.target.name for item in files)
     verify_ready(db,files)

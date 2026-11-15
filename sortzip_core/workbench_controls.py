@@ -237,6 +237,8 @@ class QuietFocusComboBox(QComboBox):
             foreground = QColor('#a7b6c8' if dark else '#60728a')
         elif self.property('keyboardFocus'):
             background = QColor('#2a3b50' if dark else '#edf4fc')
+        elif self.property('softHover') and self.underMouse():
+            background = QColor('#273544' if dark else '#f3f6f9')
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(QColor('#3c4a5d' if dark else '#d9e1eb'),1))

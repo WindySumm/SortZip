@@ -1,5 +1,4 @@
 """Isolated source/frozen startup verification; never touches application credentials."""
-import csv
 import json
 import os
 import shutil
@@ -27,6 +26,7 @@ def _archive_roundtrip(root, selected):
     from sortzip_core.archive_tools import ArchiveTool, resolve_tool
     from sortzip_core.nested_execution import execute_plan
     from sortzip_core.nesting import Layer, MaterializedUnit, Unit, plan_layers
+    from sortzip_core.nested_pipeline import list_rows
 
     output = root/'legacy-output'
     source = output/'材料'
@@ -55,24 +55,24 @@ def _archive_roundtrip(root, selected):
         raise RuntimeError('旧断点生成或取消失败')
     checkpoint = engine._checkpoint_path(output)
     before = json.loads(checkpoint.read_bytes())
-    params = dict(resume_from=str(checkpoint),layer_passwords={0:password,1:password})
-    if before['schema']!=3 or engine.main_from_config(params)!='completed':
-        raise RuntimeError('旧断点恢复失败')
+    params = dict(resume_from=str(checkpoint),layer_passwords={0:password,1:password},
+                  archive_tool_paths={selected:executable})
+    stats = {}
+    if before['schema']!=3 or engine.main_from_config(params,stats=stats)!='completed':
+        raise RuntimeError('旧断点恢复失败：'+stats.get('error_detail',''))
     after = json.loads(checkpoint.read_bytes())
     if any(after['completed'][key]!=record for key,record in before['completed'].items()):
         raise RuntimeError('已完成的旧归档未复用')
     outer = after['completed'][after['final_ids'][0]]
-    with (source/'List.txt').open(encoding='utf-8',newline='') as stream:
-        rows = list(csv.DictReader(stream,delimiter='\t'))
+    rows = list(list_rows(source/'List.txt'))
     if len(rows)!=len(payloads) or any(row['所属压缩包名']!=outer['folder']+'/'+outer['entry'] or
                                       not (output/row['所属压缩包名']).is_file() for row in rows):
         raise RuntimeError('清单没有引用实际入口卷')
     volumes = root/'canonical'
     shutil.copytree(output/outer['folder'],volumes)
     powershell = Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe'
-    restore = subprocess.run([str(powershell),'-NoProfile','-ExecutionPolicy','Bypass','-File',
-                              str(volumes/'Restore-Archive-Names'/'Restore-Names.ps1')],
-                             stdin=subprocess.DEVNULL,capture_output=True,timeout=30,
+    restore = subprocess.run(['cmd.exe','/d','/c','Restore-Names.cmd'],
+                             cwd=volumes/'Restore-Archive-Names',input=b'\r\n',capture_output=True,timeout=30,
                              creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     if restore.returncode:
         raise RuntimeError('后缀还原脚本执行失败')
@@ -135,20 +135,25 @@ def _archive_roundtrip(root, selected):
     if (any(step!='done' for step in final['cleanup'].values()) or
             any((output/record['folder']/row['shown']).exists()
                 for record in records[:-1] for row in record['files']) or
-            any((output/'材料').glob('*.bin'))):
+            any((output/'材料').glob('*.bin')) or (output/'layer-1').exists()
+            or list(output.glob('.sortzip-archives-*'))):
         raise RuntimeError('三层任务清理结果不匹配')
     outer = records[-1]
-    with (output/'材料/List.txt').open(encoding='utf-8',newline='') as stream:
-        rows = list(csv.DictReader(stream,delimiter='\t'))
+    from sortzip_core.restore_bundle import CHINESE_CATEGORY_LAUNCHER
+    launcher = CHINESE_CATEGORY_LAUNCHER if final['script_language']=='zh' else 'Restore-Names.cmd'
+    if outer['folder']!='材料' or not (output/'材料'/launcher).is_file():
+        raise RuntimeError('成品或还原脚本未发布到分类目录')
+    from sortzip_core.nested_pipeline import list_rows
+    rows = list(list_rows(output/'材料/List.txt'))
     if len(rows)!=len(payloads) or any(row['所属压缩包名']!=outer['folder']+'/'+outer['entry'] for row in rows):
         raise RuntimeError('三层清单没有引用实际入口卷')
     volumes = root/'retention-canonical'
     shutil.copytree(output/outer['folder'],volumes)
     for record in reversed(records):
         if record is outer:
-            subprocess.run([str(powershell),'-NoProfile','-ExecutionPolicy','Bypass','-File',
-                            str(volumes/'Restore-Archive-Names/Restore-Names.ps1')],
-                           check=True,stdin=subprocess.DEVNULL,capture_output=True,timeout=30)
+            subprocess.run(['cmd.exe','/d','/c',launcher],cwd=volumes,
+                           check=True,input=b'\r\n',capture_output=True,timeout=30,
+                           creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
             entry = volumes/rows[0]['标准入口卷名']
         else:
             entry = target/record['entry']
@@ -166,11 +171,29 @@ def _archive_roundtrip(root, selected):
     if len(manifests)!=1 or unpack(dict(dest=str(destination),unpack_manifests=manifests,
                                       unpack_passwords=[password]),{})!='completed':
         raise RuntimeError('自动解包失败')
-    restored = next(destination.glob('*/group-1-1-1'))
+    restored = destination/outer['delivery']['stem']/records[0]['delivery']['stem']
     if {path.name:path.read_bytes() for path in restored.iterdir()}!=payloads:
         raise RuntimeError('自动恢复原名后的内容不一致')
+    aggregate = 'unverified'
+    if selected in ('bandizip','7zip'):
+        phrase = 'SortZip generated smoke test phrase'
+        managed = root/'managed-delivery'
+        config = dict(task,dest=str(managed),managed_recovery=True,
+                      compression_layers=[Layer(1,archive_format,password=password)],
+                      restore_original_names=False,delivery_password_mode='encrypted',delivery_phrase=phrase)
+        if engine.main_from_config(config)!='completed' or engine._checkpoint_path(managed).exists():
+            raise RuntimeError('总清单生成或断点清理失败')
+        manifests = list(managed.rglob('*.sortzip.json'))
+        destination = root/'managed-unpack'
+        if len(manifests)!=1 or unpack(dict(dest=str(destination),unpack_manifests=manifests,
+                unpack_delivery_phrases={str(manifests[0]):phrase}),{})!='completed':
+            raise RuntimeError('总清单自动解包失败')
+        if {path.name:path.read_bytes() for path in destination.iterdir() if path.is_file()}!=payloads:
+            raise RuntimeError('总清单还原后内容不一致')
+        aggregate = 'ok'
     return {'schema':before['schema'],'outer_volumes':len(outer['files']),'files_matched':len(payloads),
-            'member_verified_layers':len(records),'retention_resume':'ok','automatic_unpack':'ok'}
+            'member_verified_layers':len(records),'retention_resume':'ok','automatic_unpack':'ok',
+            'task_manifest':aggregate}
 
 
 def run_smoke_test(report_path):
@@ -215,7 +238,8 @@ def run_smoke_test(report_path):
                 if not Path(resource_path('assets/sortzip.ico')).is_file():
                     raise RuntimeError('打包图标资源缺失')
                 from sortzip_core import restore_bundle
-                if not Path(restore_bundle.__file__).with_name('restore_names.ps1').is_file():
+                if any(not Path(restore_bundle.__file__).with_name(name).is_file()
+                       for name in ('restore_names.ps1','restore_category.ps1')):
                     raise RuntimeError('还原脚本资源缺失')
                 if len(window.state.layers)!=1 or hasattr(window,'stack'):
                     raise RuntimeError('正式工作台未正确初始化')
